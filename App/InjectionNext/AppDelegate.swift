@@ -26,6 +26,9 @@ enum InjectionState: String {
 class AppDelegate: NSObject, NSApplicationDelegate {
 
     static var ui: AppDelegate!
+    static var isSwiftSimEngine: Bool {
+        ProcessInfo.processInfo.environment["SWIFT_SIM_ENGINE"] == "1"
+    }
 
     // MARK: - Compatibility shims (route to ConfigStore)
 
@@ -95,6 +98,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // handler that used to crash with _os_unfair_lock_recursive_abort.
         signal(SIGPIPE, SIG_IGN)
 
+        if Self.isSwiftSimEngine {
+            let environment = ProcessInfo.processInfo.environment
+            NSApp.setActivationPolicy(.prohibited)
+            DispatchQueue.main.async {
+                NSApp.windows.forEach { $0.close() }
+            }
+            ConfigStore.shared.hideXcodeAlert = true
+            ConfigStore.shared.autoLaunchXcode = false
+            ConfigStore.shared.xcodeRestart = false
+            ConfigStore.shared.mcpServer = true
+            ConfigStore.shared.devicesEnabled = true
+            if let identity = environment["SWIFT_SIM_CODESIGN_IDENTITY"],
+               !identity.isEmpty {
+                ConfigStore.shared.codesigningIdentity = identity
+            }
+            if let project = environment["SWIFT_SIM_PROJECT_ROOT"],
+               !project.isEmpty {
+                ConfigStore.shared.projectPath = project
+            }
+        }
+
         setMenuIcon(.idle)
 
         // Populate the list of valid codesigning identities.
@@ -105,6 +129,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             _ = FrontendServer.startOnce
         }
         deviceEnable(nil)
+        if Self.isSwiftSimEngine,
+           !ConfigStore.shared.projectPath.isEmpty {
+            watch(path: ConfigStore.shared.projectPath)
+        }
 
         if let xcodePath = MonitorXcode.externalXcode?.bundleURL?.path {
             if Defaults.xcodeDefault == nil {
@@ -127,7 +155,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             _ = MonitorXcode()
         }
 
-        if Defaults.mcpServer {
+        if Defaults.mcpServer || Self.isSwiftSimEngine {
             LogManager.shared.startCapturing()
             ControlServer.start()
         }

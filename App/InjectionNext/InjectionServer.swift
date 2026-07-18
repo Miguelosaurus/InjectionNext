@@ -61,6 +61,9 @@ class InjectionServer: SimpleSocket {
     class func alert(_ msg: String, cancel: String? = nil) -> Bool {
         NSLog("\(APP_PREFIX)\(APP_NAME) \(msg)")
         LogBuffer.shared.append("\(APP_NAME) \(msg)", level: "alert")
+        if AppDelegate.isSwiftSimEngine {
+            return false
+        }
         lastAlert = NSAlert()
         lastAlert?.messageText = "\(self)"
         lastAlert?.informativeText = msg

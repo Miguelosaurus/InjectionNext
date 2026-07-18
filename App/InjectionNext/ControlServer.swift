@@ -14,7 +14,10 @@ import Cocoa
 class ControlServer {
 
     static let compatibilityPort: UInt16 = 8919
-    static let socketPath = "/tmp/InjectionNext-control.sock"
+    static var socketPath: String {
+        ProcessInfo.processInfo.environment["SWIFT_SIM_ENGINE_SOCKET"]
+            ?? "/tmp/InjectionNext-control.sock"
+    }
     static var servicedRequest = false
     static var shared: ControlServer?
 
@@ -23,7 +26,9 @@ class ControlServer {
 
     static func start() {
         guard shared == nil else { return }
-        CompatibilityControlServer.startServer(":\(compatibilityPort)")
+        if !AppDelegate.isSwiftSimEngine {
+            CompatibilityControlServer.startServer(":\(compatibilityPort)")
+        }
         shared = ControlServer()
         shared?.listen()
     }
@@ -224,6 +229,12 @@ class ControlServer {
             result["has_connected_client"] = InjectionServer.currentClient != nil
             result["auto_restart_xcode"] = Defaults.xcodeRestart
             result["last_error"] = NextCompiler.lastError
+            result["last_source"] = NextCompiler.lastSource
+            result["injection_state"] = ConfigStore.shared.injectionState.rawValue
+            result["engine_mode"] = AppDelegate.isSwiftSimEngine
+            result["codesigning_identity_configured"] =
+                !(ConfigStore.shared.codesigningIdentity ?? "").isEmpty
+            result["project_path"] = ConfigStore.shared.projectPath
         }
         return .ok(result)
     }

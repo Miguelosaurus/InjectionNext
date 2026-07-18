@@ -11,9 +11,10 @@ import SwiftUI
 struct InjectionNextApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     @StateObject private var config = ConfigStore.shared
+    @State private var menuBarInserted = !AppDelegate.isSwiftSimEngine
 
     var body: some Scene {
-        MenuBarExtra {
+        MenuBarExtra(isInserted: $menuBarInserted) {
             StatusMenuView(config: config)
         } label: {
             Image(nsImage: config.statusIcon)
