@@ -133,6 +133,7 @@ class NextCompiler {
                    let data = codesign(dylib: dylib, platform: platform) else {
                     error("Injection failed. Was your app connected?")
                     AppDelegate.ui.setMenuIcon(.error)
+                    ControlServer.recordInjectionResult(succeeded: false)
                     return false
                 }
 
@@ -176,6 +177,7 @@ class NextCompiler {
                 sendMetrics(metrics)
             }
             self.error(error)
+            ControlServer.recordInjectionResult(succeeded: false)
             return false
         }
     }

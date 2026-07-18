@@ -20,6 +20,10 @@ class ControlServer {
     }
     static var servicedRequest = false
     static var shared: ControlServer?
+    static var injectionRequestID = 0
+    static var completedInjectionRequestID = 0
+    static var lastInjectionSucceeded: Bool?
+    static var lastInjectionCompletedAt: TimeInterval?
 
     private var serverSocket: Int32 = -1
     private let queue = DispatchQueue(label: "ControlServer", attributes: .concurrent)
@@ -216,6 +220,12 @@ class ControlServer {
             }
             return registerCompilations(commands)
 
+        case "inject_source":
+            guard let path = params["path"] as? String else {
+                return .fail("Missing 'path' parameter")
+            }
+            return injectSource(path: path)
+
         default:
             return .fail("Unknown action: \(action)")
         }
@@ -244,6 +254,12 @@ class ControlServer {
             let platform = InjectionServer.currentClient?.platform ?? "iPhoneOS"
             result["captured_compilations"] =
                 FrontendServer.frontendRecompiler(for: platform).compilations.count
+            result["injection_request_id"] = Self.injectionRequestID
+            result["completed_injection_request_id"] =
+                Self.completedInjectionRequestID
+            result["last_injection_succeeded"] = Self.lastInjectionSucceeded
+            result["last_injection_completed_at"] =
+                Self.lastInjectionCompletedAt
         }
         return .ok(result)
     }
@@ -290,6 +306,34 @@ class ControlServer {
             "registered_count": registered.count,
             "sources": Array(Set(registered)).sorted()
         ])
+    }
+
+    private func injectSource(path: String) -> ActionResult {
+        let source = URL(fileURLWithPath: path).standardized.path
+        guard source.hasSuffix(".swift"),
+              FileManager.default.fileExists(atPath: source),
+              let root = AppDelegate.alreadyWatching(source),
+              let watcher = AppDelegate.watchers[root] else {
+            return .fail("Source is not a watched Swift file: \(source)")
+        }
+        Self.injectionRequestID += 1
+        Self.lastInjectionSucceeded = nil
+        let requestID = Self.injectionRequestID
+        DispatchQueue.main.async {
+            watcher.inject(source: source)
+        }
+        return .ok(["request_id": requestID, "source": source])
+    }
+
+    static func recordInjectionResult(succeeded: Bool) {
+        guard isSwiftSimEngine else { return }
+        completedInjectionRequestID = injectionRequestID
+        lastInjectionSucceeded = succeeded
+        lastInjectionCompletedAt = Date.timeIntervalSinceReferenceDate
+    }
+
+    private static var isSwiftSimEngine: Bool {
+        AppDelegate.isSwiftSimEngine
     }
 
     private func watchProject(path: String) -> ActionResult {

@@ -20,6 +20,9 @@ Swift Sim can register the exact `swift-frontend` commands emitted by its
 baseline `xcodebuild` result bundle through the `register_compilations` control
 action. This avoids patching Xcode's toolchain and makes command-line device
 builds first-class inputs to subsequent file-watcher injections.
+Swift Sim can request a specific watched source through `inject_source` and
+correlate the request with an explicit success or failure result. File watching
+remains available, but agent-driven edits do not depend on FSEvents timing.
 
 ## Staying current with upstream
 

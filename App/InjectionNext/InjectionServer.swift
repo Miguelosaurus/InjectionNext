@@ -309,8 +309,10 @@ class InjectionServer: SimpleSocket {
                 }
             case .injected:
                 AppDelegate.ui.setMenuIcon(.ok)
+                ControlServer.recordInjectionResult(succeeded: true)
             case .failed:
                 AppDelegate.ui.setMenuIcon(.error)
+                ControlServer.recordInjectionResult(succeeded: false)
             case .unhide:
                 log("Injection could not load. If this was due to a default " +
                     "argument. Select the app's menu item \"Unhide Symbols\".")
