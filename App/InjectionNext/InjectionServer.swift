@@ -176,6 +176,9 @@ class InjectionServer: SimpleSocket {
     override func runInBackground() {
         do {
             try Fortify.protect {
+                if AppDelegate.isSwiftSimEngine {
+                    isLocalClient = false
+                }
                 guard validateConnection() else {
                     sendCommand(.invalid, with: nil)
                     error("Connection did not validate.")

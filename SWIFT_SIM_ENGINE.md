@@ -23,6 +23,9 @@ builds first-class inputs to subsequent file-watcher injections.
 Swift Sim can request a specific watched source through `inject_source` and
 correlate the request with an explicit success or failure result. File watching
 remains available, but agent-driven edits do not depend on FSEvents timing.
+Engine connections are treated as remote even when a userspace Tailnet proxy
+presents the peer as loopback, ensuring patches are streamed to the device
+instead of linked against its sandbox path.
 
 ## Staying current with upstream
 
