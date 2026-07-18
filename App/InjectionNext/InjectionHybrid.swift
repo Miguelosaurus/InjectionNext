@@ -150,7 +150,8 @@ class InjectionHybrid: InjectionBase {
 
         recompiler = logParsingCompiler
         if source.hasSuffix(".swift") &&
-            AppDelegate.ui.updatePatchUnpatch() == .patched {
+            (AppDelegate.ui.updatePatchUnpatch() == .patched ||
+             AppDelegate.isSwiftSimEngine) {
             let proxyCompiler = FrontendServer.frontendRecompiler(for: platform)
             if proxyCompiler.canCompile(source: source) {
                 recompiler = proxyCompiler

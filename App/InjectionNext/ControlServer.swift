@@ -210,6 +210,12 @@ class ControlServer {
         case "clear_logs":
             return clearLogs()
 
+        case "register_compilations":
+            guard let commands = params["commands"] as? [[String: Any]] else {
+                return .fail("Missing 'commands' parameter")
+            }
+            return registerCompilations(commands)
+
         default:
             return .fail("Unknown action: \(action)")
         }
@@ -235,8 +241,55 @@ class ControlServer {
             result["codesigning_identity_configured"] =
                 !(ConfigStore.shared.codesigningIdentity ?? "").isEmpty
             result["project_path"] = ConfigStore.shared.projectPath
+            let platform = InjectionServer.currentClient?.platform ?? "iPhoneOS"
+            result["captured_compilations"] =
+                FrontendServer.frontendRecompiler(for: platform).compilations.count
         }
         return .ok(result)
+    }
+
+    private func registerCompilations(_ commands: [[String: Any]]) -> ActionResult {
+        var registered = [String]()
+        for command in commands {
+            guard let arguments = command["arguments"] as? [String],
+                  arguments.count >= 2,
+                  arguments[0] == "-frontend",
+                  arguments[1] == "-c" else { continue }
+            var parser = FrontendServer.CompilationArgParser()
+            parser.workingDir = command["working_directory"] as? String
+                ?? ConfigStore.shared.projectPath
+            var index = 2
+            while index < arguments.count {
+                let argument = arguments[index]
+                index += 1
+                parser.process(arg: argument) {
+                    guard index < arguments.count else { return nil }
+                    defer { index += 1 }
+                    return arguments[index]
+                }
+            }
+            let sources = parser.primaries.isEmpty
+                ? parser.swiftFiles.components(separatedBy: .newlines)
+                    .filter { !$0.isEmpty }
+                : parser.primaries
+            guard !sources.isEmpty else { continue }
+            let compilation = NextCompiler.Compilation(
+                arguments: parser.args,
+                swiftFiles: parser.swiftFiles,
+                workingDir: parser.workingDir,
+                env: nil
+            )
+            let recompiler = FrontendServer.frontendRecompiler(for: parser.platform)
+            for source in sources {
+                recompiler.store(compilation: compilation, for: source)
+                registered.append(source)
+            }
+            recompiler.writeCache()
+        }
+        return .ok([
+            "registered_count": registered.count,
+            "sources": Array(Set(registered)).sorted()
+        ])
     }
 
     private func watchProject(path: String) -> ActionResult {

@@ -16,6 +16,11 @@ and the legacy TCP control service. It automatically enables the device patch
 server, watches the supplied project root, and exposes the existing JSON
 control API through the supplied user-only Unix socket.
 
+Swift Sim can register the exact `swift-frontend` commands emitted by its
+baseline `xcodebuild` result bundle through the `register_compilations` control
+action. This avoids patching Xcode's toolchain and makes command-line device
+builds first-class inputs to subsequent file-watcher injections.
+
 ## Staying current with upstream
 
 `main` is reserved as a mirror of `johnno1962/InjectionNext`. Updates are
