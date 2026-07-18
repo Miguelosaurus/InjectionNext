@@ -286,8 +286,10 @@ open class InjectionNext: SimpleSocket {
         func injectAndSweep(_ dylib: String) {
             Reloader.injectionNumber += 1
             var succeeded = false
+            log("Loading live patch \(URL(fileURLWithPath: dylib).lastPathComponent)")
             if let (image, classes) = Reloader.injectionQueue
                 .sync(execute: { loader.loadAndPatch(in: dylib) }) {
+                log("Live patch loaded; refreshing instances")
                 if let tracing = getenv(INJECTION_TRACE_FRAMEWORKS) {
                     traceCalls(toFrameworks: String(cString: tracing),
                                images: [image])
@@ -308,8 +310,10 @@ open class InjectionNext: SimpleSocket {
                         """)
                 }
             } else {
+                log("Live patch could not be loaded")
                 sendResponse(.unhide)
             }
+            log(succeeded ? "Live patch applied" : "Live patch failed")
             sendResponse(succeeded ? .injected : .failed)
         }
 
@@ -349,6 +353,7 @@ open class InjectionNext: SimpleSocket {
                 guard let dylibName = readString(), let data = readData() else {
                     return error("Unable to read dylib")
                 }
+                log("Received remote live patch \(dylibName) (\(data.count) bytes)")
                 let dylib = NSTemporaryDirectory() + dylibName
                 try! data.write(to: URL(fileURLWithPath: dylib))
                 injectAndSweep(dylib)
