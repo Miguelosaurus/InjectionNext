@@ -75,9 +75,13 @@ class InjectionHybrid: InjectionBase {
         Reloader.injectionQueue = .main
         super.init()
         do {
-            // Extend FileWatcher pattern to detect git lock files
+            // Swift Sim owns classification and dispatch. Keep the watcher
+            // alive for project bookkeeping, but never auto-inject an edit.
+            let pattern = AppDelegate.isSwiftSimEngine
+                ? #"(?!)"#
+                : ConfigStore.shared.injectablePattern
             FileWatcher.INJECTABLE_PATTERN = try NSRegularExpression(
-                pattern: ConfigStore.shared.injectablePattern)
+                pattern: pattern)
         } catch {
             InjectionServer.error("Invalid file pattern: \(error)")
         }
