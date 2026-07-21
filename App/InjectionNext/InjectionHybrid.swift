@@ -85,6 +85,15 @@ class InjectionHybrid: InjectionBase {
 
     /// Called from file watcher when file is edited.
     override func inject(source: String) {
+        // Swift Sim classifies the complete before/after edit and explicitly
+        // requests either a managed dynamic replacement or the legacy source
+        // injector. Do not race that decision with the raw filesystem watcher.
+        guard !AppDelegate.isSwiftSimEngine else { return }
+        injectRequested(source: source)
+    }
+
+    /// Injection explicitly requested through the local control socket.
+    func injectRequested(source: String) {
         // Detect git lock files - record path for later checking
         if source.hasSuffix(".lock") &&
            source.contains("/.git/") {

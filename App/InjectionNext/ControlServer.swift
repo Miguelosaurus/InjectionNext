@@ -329,7 +329,7 @@ class ControlServer {
         Self.lastInjectionSucceeded = nil
         let requestID = Self.injectionRequestID
         DispatchQueue.main.async {
-            watcher.inject(source: source)
+            watcher.injectRequested(source: source)
         }
         return .ok(["request_id": requestID, "source": source])
     }
