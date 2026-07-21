@@ -182,6 +182,29 @@ class NextCompiler {
         }
     }
 
+    /// Sends a Swift Sim-generated dynamic replacement library through the
+    /// same signing and remote-device transport used by normal injections.
+    func injectPreparedDylib(path: String, source: String) -> Bool {
+        guard let client = InjectionServer.currentClient else {
+            error("No live-enabled app is connected")
+            ControlServer.recordInjectionResult(succeeded: false)
+            return false
+        }
+        client.injectionNumber += 1
+        guard let data = codesign(dylib: path, platform: client.platform) else {
+            error("Unable to sign the dynamic replacement library")
+            ControlServer.recordInjectionResult(succeeded: false)
+            return false
+        }
+        let dylibName = "eval_injection_swift_sim_dynamic_\(client.injectionNumber).dylib"
+        InjectionServer.clientQueue.sync {
+            client.writeCommand(InjectionCommand.inject.rawValue, with: dylibName)
+            client.write(data)
+        }
+        Self.lastSource = source
+        return true
+    }
+
     /// Seek to highlight potentially unsupported injections.
     func unsupported(source: String, dylib: String, client: InjectionServer) {
         #if !INJECTION_III_APP

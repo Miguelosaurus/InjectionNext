@@ -15,7 +15,7 @@
 #define HOTRELOADING_PORT ":8887"
 #define HOTRELOADING_MULTICAST "239.255.255.239"
 
-#define INJECTION_VERSION 4001
+#define INJECTION_VERSION 4002
 #define COMMANDS_PORT ":8896"
 #define INJECTION_ADDRESS HOTRELOADING_PORT
 extern NSString *INJECTION_KEY;
@@ -66,6 +66,7 @@ typedef NS_ENUM(int, InjectionResponse) {
     InjectionScreenshotData,
     InjectionTouchEvent,
     InjectionReplayComplete,
+    InjectionPatchResult,
 
     InjectionExit = ~0
 };

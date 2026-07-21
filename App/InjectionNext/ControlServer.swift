@@ -24,6 +24,7 @@ class ControlServer {
     static var completedInjectionRequestID = 0
     static var lastInjectionSucceeded: Bool?
     static var lastInjectionCompletedAt: TimeInterval?
+    static var lastPatchReport: [String: Any]?
 
     private var serverSocket: Int32 = -1
     private let queue = DispatchQueue(label: "ControlServer", attributes: .concurrent)
@@ -226,6 +227,13 @@ class ControlServer {
             }
             return injectSource(path: path)
 
+        case "inject_dylib":
+            guard let path = params["path"] as? String,
+                  let source = params["source"] as? String else {
+                return .fail("Missing 'path' or 'source' parameter")
+            }
+            return injectDylib(path: path, source: source)
+
         default:
             return .fail("Unknown action: \(action)")
         }
@@ -260,6 +268,7 @@ class ControlServer {
             result["last_injection_succeeded"] = Self.lastInjectionSucceeded
             result["last_injection_completed_at"] =
                 Self.lastInjectionCompletedAt
+            result["last_patch_report"] = Self.lastPatchReport
         }
         return .ok(result)
     }
@@ -325,11 +334,33 @@ class ControlServer {
         return .ok(["request_id": requestID, "source": source])
     }
 
-    static func recordInjectionResult(succeeded: Bool) {
+    private func injectDylib(path: String, source: String) -> ActionResult {
+        let dylib = URL(fileURLWithPath: path).standardized.path
+        guard dylib.hasSuffix(".dylib"),
+              FileManager.default.fileExists(atPath: dylib) else {
+            return .fail("Dynamic replacement library is missing: \(dylib)")
+        }
+        guard let client = InjectionServer.currentClient else {
+            return .fail("No live-enabled app is connected")
+        }
+        Self.injectionRequestID += 1
+        Self.lastInjectionSucceeded = nil
+        Self.lastPatchReport = nil
+        let requestID = Self.injectionRequestID
+        let recompiler = FrontendServer.frontendRecompiler(for: client.platform)
+        DispatchQueue.main.async {
+            _ = recompiler.injectPreparedDylib(path: dylib, source: source)
+        }
+        return .ok(["request_id": requestID, "source": source])
+    }
+
+    static func recordInjectionResult(succeeded: Bool,
+                                      report: [String: Any]? = nil) {
         guard isSwiftSimEngine else { return }
         completedInjectionRequestID = injectionRequestID
         lastInjectionSucceeded = succeeded
         lastInjectionCompletedAt = Date.timeIntervalSinceReferenceDate
+        lastPatchReport = report
     }
 
     private static var isSwiftSimEngine: Bool {

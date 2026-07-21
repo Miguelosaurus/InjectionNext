@@ -285,7 +285,6 @@ open class InjectionNext: SimpleSocket {
         var loader = Reloader() // InjectionLite injection implementation
         func injectAndSweep(_ dylib: String) {
             Reloader.injectionNumber += 1
-            var succeeded = false
             log("Loading live patch \(URL(fileURLWithPath: dylib).lastPathComponent)")
             if let (image, classes) = Reloader.injectionQueue
                 .sync(execute: { loader.loadAndPatch(in: dylib) }) {
@@ -294,27 +293,43 @@ open class InjectionNext: SimpleSocket {
                     traceCalls(toFrameworks: String(cString: tracing),
                                images: [image])
                 }
+                let dynamicReplacements = image.swiftSymbols(withSuffixes: ["TI"]).count
+                let objcCategories = image.entries(withPrefix: "_OBJC_$_CATEGORY_").count
+                var refreshRevision: Int?
+                let acknowledgement = NotificationCenter.default.addObserver(
+                    forName: Notification.Name("SWIFT_SIM_LIVE_REVISION_APPLIED"),
+                    object: nil,
+                    queue: nil
+                ) { notification in
+                    refreshRevision = notification.userInfo?["revision"] as? Int
+                }
                 loader.sweeper.sweepAndRunTests(image: image, classes: classes)
-                succeeded = true
-
-                let countKey = "__injectionsPerformed", howOften = 100
-                let count = UserDefaults.standard.integer(forKey: countKey)+1
-                UserDefaults.standard.set(count, forKey: countKey)
-                if count % howOften == 0 && getenv("INJECTION_SPONSOR") == nil {
-                    log("""
-                        ℹ️ Seems like you're using injection quite a bit. \
-                        Have you considered sponsoring the project at \
-                        https://github.com/johnno1962/\(APP_NAME) or \
-                        asking your boss if they should? (This message \
-                        prints every \(howOften) injections.)
-                        """)
+                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(10)) {
+                    NotificationCenter.default.removeObserver(acknowledgement)
+                    let managedPatch = URL(fileURLWithPath: dylib)
+                        .lastPathComponent.contains("swift_sim_dynamic")
+                    let refreshAcknowledged = refreshRevision != nil
+                    let applied = managedPatch ? dynamicReplacements > 0 : true
+                    let succeeded = applied && (!managedPatch || refreshAcknowledged)
+                    let report: [String: Any] = [
+                        "succeeded": succeeded,
+                        "applied": applied,
+                        "new_classes": classes.new.count,
+                        "objc_categories": objcCategories,
+                        "dynamic_replacements": dynamicReplacements,
+                        "refresh_acknowledged": refreshAcknowledged,
+                        "revision": refreshRevision ?? 0
+                    ]
+                    let data = try? JSONSerialization.data(withJSONObject: report)
+                    let json = data.flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+                    self.log(succeeded ? "Live patch applied" : "Live patch rejected")
+                    self.sendResponse(.patchResult, with: json)
                 }
             } else {
                 log("Live patch could not be loaded")
                 sendResponse(.unhide)
+                sendResponse(.failed)
             }
-            log(succeeded ? "Live patch applied" : "Live patch failed")
-            sendResponse(succeeded ? .injected : .failed)
         }
 
         while true {

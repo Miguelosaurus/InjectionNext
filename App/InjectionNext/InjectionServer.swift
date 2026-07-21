@@ -316,6 +316,20 @@ class InjectionServer: SimpleSocket {
             case .failed:
                 AppDelegate.ui.setMenuIcon(.error)
                 ControlServer.recordInjectionResult(succeeded: false)
+            case .patchResult:
+                guard let json = readString(),
+                      let data = json.data(using: .utf8),
+                      let report = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    error("**** Bad patch result ****")
+                    ControlServer.recordInjectionResult(succeeded: false)
+                    continue
+                }
+                let succeeded = report["succeeded"] as? Bool == true
+                AppDelegate.ui.setMenuIcon(succeeded ? .ok : .error)
+                ControlServer.recordInjectionResult(
+                    succeeded: succeeded,
+                    report: report
+                )
             case .unhide:
                 log("Injection could not load. If this was due to a default " +
                     "argument. Select the app's menu item \"Unhide Symbols\".")
