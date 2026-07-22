@@ -418,7 +418,9 @@ class NextCompiler {
         if platform != "iPhoneSimulator" {
         var identity = "-"
         if !platform.hasSuffix("Simulator") && platform != "MacOSX" {
-            identity = DispatchQueue.main.sync { AppDelegate.ui.codeSigningID }
+            identity = Thread.isMainThread
+                ? AppDelegate.ui.codeSigningID
+                : DispatchQueue.main.sync { AppDelegate.ui.codeSigningID }
             log("Codesigning dylib with identity "+identity)
         }
         let codesign = """
