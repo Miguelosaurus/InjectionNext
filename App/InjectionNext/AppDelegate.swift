@@ -207,7 +207,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applyDeviceSettings(enabled: Bool, restartServer: Bool = true) {
         var openPort = ""
         if enabled {
-            _ = startHostLocatingServerOnce
+            // Swift Sim clients receive an explicit Tailnet host at build
+            // time. Multicast discovery is unnecessary there and can loop
+            // through a userspace TCP forward, flooding the client command
+            // stream until an acknowledged patch times out.
+            if !Self.isSwiftSimEngine {
+                _ = startHostLocatingServerOnce
+            }
             openPort = "*"
         }
         if restartServer { InjectionServer.stopLastServer() }
