@@ -17,6 +17,10 @@
 #import "SimpleSocket.h"
 
 #include <sys/socket.h>
+#include <poll.h>
+#include <time.h>
+#include <math.h>
+#include <fcntl.h>
 #include <netinet/tcp.h>
 #include <net/if.h>
 #include <ifaddrs.h>
@@ -143,19 +147,55 @@ static NSMutableDictionary<NSString *,NSNumber *> *lastSockets;
 }
 
 + (instancetype)connectTo:(NSString *)address {
+    return [self connectTo:address timeout:3.0];
+}
+
++ (instancetype)connectTo:(NSString *)address timeout:(NSTimeInterval)timeout {
     sockaddr_union serverAddr;
-    [self parseV4Address:address into:&serverAddr.any];
-
-    int clientSocket = [self newSocket:serverAddr.sa_family];
-    if (clientSocket < 0)
-        return nil;
-
-    if (connect(clientSocket, &serverAddr.addr, serverAddr.sa_len) < 0) {
-        [self error:@"Could not connect: %s"];
+    if (![self parseV4Address:address into:&serverAddr.any]) return nil;
+    int socketFD = [self newSocket:serverAddr.sa_family];
+    if (socketFD < 0) return nil;
+    int flags = fcntl(socketFD, F_GETFL, 0);
+    BOOL connected = NO;
+    if (flags >= 0 && fcntl(socketFD, F_SETFL, flags | O_NONBLOCK) == 0) {
+        int result = connect(socketFD, &serverAddr.addr, serverAddr.sa_len);
+        if (result == 0) connected = YES;
+        else if (errno == EINPROGRESS) {
+            // poll has no FD_SETSIZE stack limit. Bound interrupted waits
+            // against a monotonic deadline rather than restarting the timeout.
+            struct timespec started; clock_gettime(CLOCK_MONOTONIC, &started);
+            double wait = isfinite(timeout) ? MAX(.01, MIN(timeout, 30.0)) : 3.0;
+            double deadline = started.tv_sec + started.tv_nsec / 1e9 + wait;
+            struct pollfd writable = { socketFD, POLLOUT, 0 };
+            int result;
+            do {
+                struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
+                double remaining = deadline - now.tv_sec - now.tv_nsec / 1e9;
+                if (remaining <= 0) { result = 0; break; }
+                result = poll(&writable, 1, (int)ceil(remaining * 1000));
+            } while (result < 0 && errno == EINTR);
+            if (result > 0) {
+                int error = 0; socklen_t length = sizeof(error);
+                connected = getsockopt(socketFD, SOL_SOCKET, SO_ERROR, &error, &length) == 0 && error == 0;
+                if (!connected) errno = error;
+            }
+        }
+    }
+    if (!connected || fcntl(socketFD, F_SETFL, flags) < 0) {
+        close(socketFD);
         return nil;
     }
+    int keepAlive = 1;
+    setsockopt(socketFD, SOL_SOCKET, SO_KEEPALIVE, &keepAlive, sizeof(keepAlive));
+    int idle = 15, interval = 3, probes = 3;
+    setsockopt(socketFD, IPPROTO_TCP, TCP_KEEPALIVE, &idle, sizeof(idle));
+    setsockopt(socketFD, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval));
+    setsockopt(socketFD, IPPROTO_TCP, TCP_KEEPCNT, &probes, sizeof(probes));
+    return [[self alloc] initSocket:socketFD];
+}
 
-    return [[self alloc] initSocket:clientSocket];
+- (void)disconnect {
+    shutdown(clientSocket, SHUT_RDWR);
 }
 
 + (int)newSocket:(sa_family_t)addressFamily {
@@ -212,6 +252,8 @@ static NSMutableDictionary<NSString *,NSNumber *> *lastSockets;
 - (instancetype)initSocket:(int)socket {
     if ((self = [super init])) {
         clientSocket = socket;
+        int noSignal = 1;
+        setsockopt(clientSocket, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, sizeof(noSignal));
     }
     return self;
 }
@@ -232,17 +274,12 @@ typedef ssize_t (*io_func)(int, void *, size_t);
 
 - (BOOL)perform:(io_func)io ofBytes:(const void *)buffer
          length:(size_t)length cmd:(SEL)cmd {
-    size_t bytes, ptr = 0;
-    SLog(@"#%d %s %lu [%p] %s", clientSocket, io == read ?
-         "<-" : "->", length, buffer, sel_getName(cmd));
-    while (ptr < length && (bytes = io(clientSocket,
-        (char *)buffer+ptr, MIN(length-ptr, MAX_PACKET))) > 0)
-        ptr += bytes;
-    if (ptr < length) {
-        if (errno)
-            NSLog(@"[%@ %s:%p length:%lu] error: %lu %s",
-                  self, sel_getName(cmd), buffer, length, ptr, strerror(errno));
-        return FALSE;
+    size_t ptr = 0;
+    while (ptr < length) {
+        ssize_t bytes = io(clientSocket, (char *)buffer + ptr, MIN(length - ptr, MAX_PACKET));
+        if (bytes > 0) ptr += (size_t)bytes;
+        else if (bytes < 0 && errno == EINTR) continue;
+        else return FALSE;
     }
     return TRUE;
 }
@@ -268,25 +305,90 @@ typedef ssize_t (*io_func)(int, void *, size_t);
 }
 
 - (NSData *)readData {
-    size_t length = [self readInt];
-    if (length == EOS) return nil;
-    void *bytes = malloc(length);
-    if (!bytes || ![self readBytes:bytes length:length cmd:_cmd])
+    return [self readDataWithMaxLength:INT32_MAX];
+}
+
+- (NSData *)readDataWithMaxLength:(size_t)maxLength {
+    int length = [self readInt];
+    // Validate the signed wire length before allocation. A malformed frame
+    // invalidates the stream; reconnect starts from a clean framing boundary.
+    if (length < 0 || (size_t)length > maxLength) {
+        [self disconnect];
         return nil;
-    return [NSData dataWithBytesNoCopy:bytes length:length freeWhenDone:YES];
+    }
+    void *bytes = malloc(length ? (size_t)length : 1);
+    if (!bytes || ![self readBytes:bytes length:(size_t)length cmd:_cmd]) {
+        free(bytes);
+        [self disconnect];
+        return nil;
+    }
+    return [NSData dataWithBytesNoCopy:bytes length:(size_t)length freeWhenDone:YES];
 }
 
 - (NSString *)readString {
-    size_t length = [self readInt];
-    if (length == EOS) return nil;
-    void *bytes = malloc(length+1);
-    if (!bytes || ![self readBytes:bytes length:length cmd:_cmd])
-        return nil;
-    ((char *)bytes)[length] = 0;
-    NSString *str = [[NSString alloc] initWithBytesNoCopy:bytes length:length
-                             encoding:NSUTF8StringEncoding freeWhenDone:YES];
-    SLog(@"#%d <- %d '%@'", clientSocket, (int)str.length, str);
-    return str;
+    return [self readStringWithMaxLength:INT32_MAX];
+}
+
+- (NSString *)readStringWithMaxLength:(size_t)maxLength {
+    NSData *data = [self readDataWithMaxLength:maxLength];
+    if (!data) return nil;
+    NSString *string = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if (!string) [self disconnect];
+    return string;
+}
+
+static double monotonicSeconds(void) {
+    struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
+    return now.tv_sec + now.tv_nsec / 1e9;
+}
+
+- (BOOL)writePreparedCommand:(int)command metadata:(NSString *)metadata data:(NSData *)data timeout:(NSTimeInterval)timeout {
+    NSData *encoded = [metadata dataUsingEncoding:NSUTF8StringEncoding];
+    if (!encoded || encoded.length > 16 * 1024 || data.length > 256 * 1024 * 1024) return NO;
+    int32_t commandValue = command, metadataLength = (int32_t)encoded.length, dataLength = (int32_t)data.length;
+    NSArray<NSData *> *frames = @[[NSData dataWithBytes:&commandValue length:sizeof commandValue],
+        [NSData dataWithBytes:&metadataLength length:sizeof metadataLength], encoded,
+        [NSData dataWithBytes:&dataLength length:sizeof dataLength], data];
+    double deadline = monotonicSeconds() + (isfinite(timeout) ? MAX(.01, MIN(timeout, 30.0)) : 3.0);
+    struct timeval previousTimeout = {};
+    socklen_t previousLength = sizeof(previousTimeout);
+    if (getsockopt(clientSocket, SOL_SOCKET, SO_SNDTIMEO, &previousTimeout, &previousLength) < 0) {
+        [self disconnect]; return NO;
+    }
+    @try {
+        for (NSData *frame in frames) {
+            size_t offset = 0;
+            while (offset < frame.length) {
+                double remaining = deadline - monotonicSeconds();
+                if (remaining <= 0) { [self disconnect]; return NO; }
+                // Darwin AF_UNIX can block send despite MSG_DONTWAIT. A scoped
+                // socket timeout bounds the syscall without changing the
+                // concurrently blocked reader's O_NONBLOCK mode.
+                struct timeval budget = { (time_t)remaining, (suseconds_t)ceil((remaining - floor(remaining)) * 1e6) };
+                if (budget.tv_usec >= 1000000) { budget.tv_sec++; budget.tv_usec -= 1000000; }
+                if (setsockopt(clientSocket, SOL_SOCKET, SO_SNDTIMEO, &budget, sizeof budget) < 0) {
+                    [self disconnect]; return NO;
+                }
+                ssize_t count = send(clientSocket, (const char *)frame.bytes + offset,
+                                     MIN(frame.length - offset, MAX_PACKET), 0);
+                if (count > 0) { offset += (size_t)count; continue; }
+                if (count < 0 && errno == EINTR) continue;
+                if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                    remaining = deadline - monotonicSeconds();
+                    if (remaining > 0) {
+                        struct pollfd writable = { clientSocket, POLLOUT, 0 };
+                        int result = poll(&writable, 1, (int)ceil(remaining * 1000));
+                        if (result > 0 || (result < 0 && errno == EINTR)) continue;
+                    }
+                }
+                [self disconnect];
+                return NO;
+            }
+        }
+        return YES;
+    } @finally {
+        setsockopt(clientSocket, SOL_SOCKET, SO_SNDTIMEO, &previousTimeout, sizeof previousTimeout);
+    }
 }
 
 - (BOOL)writeBytes:(const void *)buffer length:(size_t)length cmd:(SEL)cmd {

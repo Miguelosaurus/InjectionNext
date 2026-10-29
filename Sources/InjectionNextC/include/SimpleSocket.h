@@ -25,6 +25,8 @@
 + (void)stopLastServer;
 
 + (instancetype _Nullable)connectTo:(NSString *_Nonnull)address;
++ (instancetype _Nullable)connectTo:(NSString *_Nonnull)address timeout:(NSTimeInterval)timeout;
+- (void)disconnect;
 + (BOOL)parseV4Address:(NSString *_Nonnull)address into:(struct sockaddr_storage *_Nonnull)serverAddr;
 
 + (void)multicastServe:(const char *_Nonnull)multicast port:(const char *_Nonnull)port;
@@ -42,6 +44,8 @@
 - (void * _Nullable)readPointer;
 - (NSData *_Nullable)readData;
 - (NSString *_Nullable)readString;
+- (NSData *_Nullable)readDataWithMaxLength:(size_t)maxLength NS_SWIFT_NAME(readData(maxLength:));
+- (NSString *_Nullable)readStringWithMaxLength:(size_t)maxLength NS_SWIFT_NAME(readString(maxLength:));
 - (BOOL)readBytes:(void * _Nonnull)buffer length:(size_t)length cmd:(SEL _Nonnull)cmd;
 
 - (BOOL)writeInt:(int)length;
@@ -50,6 +54,7 @@
 - (BOOL)writeData:(NSData *_Nonnull)data;
 - (BOOL)writeString:(NSString *_Nonnull)string;
 - (BOOL)writeCommand:(int)command withString:(NSString *_Nullable)string;
+- (BOOL)writePreparedCommand:(int)command metadata:(NSString *_Nonnull)metadata data:(NSData *_Nonnull)data timeout:(NSTimeInterval)timeout NS_SWIFT_NAME(writePrepared(command:metadata:data:timeout:));
 - (BOOL)sendFile:(NSString *_Nonnull)path;
 - (BOOL)recvFile:(NSString *_Nonnull)path;
 

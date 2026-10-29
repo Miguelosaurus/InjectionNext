@@ -19,6 +19,9 @@ for name in ["INJECTION_HOST", "INJECTION_NOSTANDALONE", "INJECTION_NOKEYPATHS",
 
 let package = Package(
     name: "InjectionNext",
+    // Swift Sim already requires macOS 13 / iOS 16. The receipt digest and
+    // network recovery APIs need at least these native SDK availability floors.
+    platforms: [.macOS(.v10_15), .iOS(.v13), .tvOS(.v13), .watchOS(.v6)],
     products: [
         // Products define the executables and libraries a package produces, making them visible to other packages.
         .library(

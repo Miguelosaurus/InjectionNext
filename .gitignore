@@ -88,3 +88,8 @@ fastlane/test_output
 # https://github.com/johnno1962/injectionforxcode
 
 iOSInjectionProject/
+
+# Disposable local Swift Sim reconnect/candidate qualification outputs.
+.build-reconnect/
+.build-engine/
+.build-ios/

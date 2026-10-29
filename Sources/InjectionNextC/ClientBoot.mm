@@ -8,6 +8,8 @@
 #if DEBUG || !SWIFT_PACKAGE
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
+#import <mach-o/dyld.h>
+#import <mach-o/loader.h>
 
 #import "InjectionImplC.h"
 #import "InjectionClient.h"
@@ -23,10 +25,108 @@ const char *_insetting(NSString *name);
 @implementation NSObject(InjectionNext)
 
 static SimpleSocket *injectionClient;
-static dispatch_once_t onlyOneClient;
+static NSCondition *reconnectCondition;
+static BOOL reconnectWorkerRunning;
+static BOOL executionActive = YES;
+static NSUInteger reconnectWakeGeneration;
+static BOOL rootReady;
+static NSUInteger rootRevision;
+
+static NSCondition *reconnectState(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ reconnectCondition = [NSCondition new]; });
+    return reconnectCondition;
+}
+
+extern "C" NSTimeInterval InjectionReconnectDelay(NSUInteger failureCount) {
+    return MIN(16.0, 0.25 * (1UL << MIN(failureCount, (NSUInteger)6)));
+}
+
+extern "C" void InjectionWakeConnection(void) {
+    NSCondition *condition = reconnectState();
+    [condition lock];
+    reconnectWakeGeneration++;
+    SimpleSocket *client = injectionClient;
+    [condition broadcast];
+    [condition unlock];
+    // shutdown, not close: the owner retains its descriptor until its read and
+    // response queues exit, so a recycled descriptor can never be signalled.
+    [client disconnect];
+}
+
+extern "C" void InjectionSetExecutionActive(BOOL active) {
+    NSCondition *condition = reconnectState();
+    [condition lock];
+    executionActive = active;
+    reconnectWakeGeneration++;
+    SimpleSocket *client = active ? nil : injectionClient;
+    [condition broadcast];
+    [condition unlock];
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"SWIFT_SIM_CLIENT_STATE_CHANGED" object:nil];
+    [client disconnect];
+}
+
+extern "C" void InjectionSetRootReady(BOOL ready, NSUInteger revision) {
+    NSCondition *condition = reconnectState();
+    [condition lock];
+    rootReady = ready;
+    rootRevision = MAX(rootRevision, revision);
+    [condition broadcast];
+    [condition unlock];
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"SWIFT_SIM_CLIENT_STATE_CHANGED" object:nil];
+}
+
+extern "C" BOOL InjectionWaitForRootReady(NSTimeInterval expiresAt) {
+    NSCondition *condition = reconnectState();
+    NSDate *deadline = [NSDate dateWithTimeIntervalSince1970:expiresAt];
+    [condition lock];
+    while (!executionActive || !rootReady) {
+        if (![condition waitUntilDate:deadline]) break;
+    }
+    BOOL ready = executionActive && rootReady && [deadline timeIntervalSinceNow] > 0;
+    [condition unlock];
+    return ready;
+}
+
+extern "C" NSDictionary *InjectionClientExecutionState(void) {
+    NSCondition *condition = reconnectState();
+    [condition lock];
+    NSDictionary *state = @{ @"is_active": @(executionActive), @"root_ready": @(rootReady), @"root_revision": @(rootRevision) };
+    [condition unlock];
+    return state;
+}
+
+extern "C" NSString *InjectionImageUUID(BOOL debugDylib) {
+    NSString *path = NSBundle.mainBundle.executablePath;
+    if (debugDylib) path = [path stringByAppendingString:@".debug.dylib"];
+    for (uint32_t index = 0; index < _dyld_image_count(); index++) {
+        const char *name = _dyld_get_image_name(index);
+        if (!name || ![path isEqualToString:[NSString stringWithUTF8String:name]]) continue;
+        const struct mach_header *header = _dyld_get_image_header(index);
+        if (!header || header->magic != MH_MAGIC_64) return @"";
+        const uint8_t *position = (const uint8_t *)header + sizeof(struct mach_header_64);
+        const uint8_t *end = position + header->sizeofcmds;
+        if (header->ncmds > 4096) return @"";
+        for (uint32_t command = 0; command < header->ncmds; command++) {
+            if ((size_t)(end - position) < sizeof(struct load_command)) return @"";
+            const struct load_command *load = (const struct load_command *)position;
+            if (load->cmdsize < sizeof(struct load_command) || load->cmdsize > (size_t)(end - position)) return @"";
+            if (load->cmd == LC_UUID && load->cmdsize >= sizeof(struct uuid_command)) {
+                return [[NSUUID alloc] initWithUUIDBytes:((const struct uuid_command *)load)->uuid].UUIDString.lowercaseString;
+            }
+            position += load->cmdsize;
+        }
+    }
+    return @"";
+}
+
 
 /// Called on load of image containing this code
 + (void)load {
+    #ifdef INJECTION_RECONNECT_TESTING
+    return;
+    #endif
+    if (getenv("SWIFT_SIM_DISABLE_CLIENT_AUTOCONNECT")) return;
     if ([InjectionNext InjectionBoot_inPreview]) return;
     #if !TARGET_OS_MAC
     [self performSelectorOnMainThread:@selector(connectInBackground)
@@ -34,6 +134,15 @@ static dispatch_once_t onlyOneClient;
 }
 
 + (void)connectInBackground {
+    #endif
+    NSNotificationCenter *notifications = NSNotificationCenter.defaultCenter;
+    #if TARGET_OS_IOS || TARGET_OS_TV || TARGET_OS_VISION
+    [notifications addObserverForName:@"UIApplicationDidBecomeActiveNotification"
+        object:nil queue:nil usingBlock:^(NSNotification *note) { InjectionSetExecutionActive(YES); }];
+    [notifications addObserverForName:@"UIApplicationDidEnterBackgroundNotification"
+        object:nil queue:nil usingBlock:^(NSNotification *note) { InjectionSetExecutionActive(NO); }];
+    #else
+    (void)notifications;
     #endif
     [self performSelectorInBackground:@selector(connectToInjection:)
                            withObject:[InjectionNext self]];
@@ -68,19 +177,49 @@ static dispatch_once_t onlyOneClient;
     ;
     #endif
 
-    // Have the address to connect to, connect and start local thread.
     NSString *socketAddr = [NSString stringWithFormat:@"%s%s", hostip, INJECTION_ADDRESS];
-    for (int retry=0, retrys=1; retry<retrys; retry++) {
-        if (retry)
-            [NSThread sleepForTimeInterval:1.0];
-        if (SimpleSocket *client = [clientClass connectTo:socketAddr]) {
-            dispatch_once(&onlyOneClient, ^{
-                // Calls to InjectionNext.runInBackground()
-                [injectionClient = client run];
-            });
-            return;
+    // Only one worker owns a socket and its command reader. A disconnect ends
+    // that reader before a replacement socket is admitted.
+    NSCondition *condition = reconnectState();
+    [condition lock];
+    if (reconnectWorkerRunning) { [condition unlock]; return; }
+    reconnectWorkerRunning = YES;
+    [condition unlock];
+    const BOOL reconnectEnabled = getenv(INJECTION_HOST) || _insetting(@INJECTION_HOST);
+    NSUInteger failures = 0;
+    do {
+        @autoreleasepool {
+            [condition lock];
+            while (!executionActive) [condition wait];
+            const NSUInteger attemptGeneration = reconnectWakeGeneration;
+            [condition unlock];
+            SimpleSocket *client = [clientClass connectTo:socketAddr timeout:3.0];
+            if (client) {
+                [condition lock];
+                BOOL current = executionActive && attemptGeneration == reconnectWakeGeneration;
+                if (current) injectionClient = client;
+                [condition unlock];
+                if (current) {
+                    failures = 0;
+                    [client runInBackground];
+                }
+                [client disconnect];
+                [condition lock];
+                if (injectionClient == client) injectionClient = nil;
+                [condition unlock];
+            }
+            if (!reconnectEnabled) break;
+            [condition lock];
+            const NSUInteger waitGeneration = reconnectWakeGeneration;
+            if (attemptGeneration == waitGeneration && executionActive) {
+                [condition waitUntilDate:[NSDate dateWithTimeIntervalSinceNow:InjectionReconnectDelay(failures++)]];
+            }
+            [condition unlock];
         }
-    }
+    } while (reconnectEnabled);
+    [condition lock];
+    reconnectWorkerRunning = NO;
+    [condition unlock];
 
     #if TARGET_IPHONE_SIMULATOR || TARGET_OS_MAC
     // If InjectionLite class present, start it up.

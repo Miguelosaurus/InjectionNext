@@ -45,6 +45,16 @@ class InjectionServer: SimpleSocket {
     }
     private var pendingScreenshot: PendingScreenshot?
     private var touchEvents = [String]()
+    private var swiftSimMetadata: [String: Any]?
+
+    func preparedMetadata() -> [String: Any]? { Self.clientQueue.sync { swiftSimMetadata } }
+    static func preparedTarget() -> (InjectionServer, [String: Any])? {
+        clientQueue.sync {
+            guard let client = connected.last, let metadata = client.swiftSimMetadata else { return nil }
+            return (client, metadata)
+        }
+    }
+
 
     func drainTouchEvents() -> [String] {
         Self.clientQueue.sync {
@@ -174,6 +184,7 @@ class InjectionServer: SimpleSocket {
 
     // On a new connection starts executing here
     override func runInBackground() {
+        defer { disconnect() }
         do {
             try Fortify.protect {
                 if AppDelegate.isSwiftSimEngine {
@@ -207,6 +218,9 @@ class InjectionServer: SimpleSocket {
 
     func processResponses() {
         sendCommand(.xcodePath, with: Defaults.xcodePath)
+        if AppDelegate.isSwiftSimEngine {
+            sendCommand(.metrics, with: "{\"notification_name\":\"SWIFT_SIM_ENGINE_CAPABILITIES\",\"prepared_delivery_protocol\":1}")
+        }
         AppDelegate.restartLastWatcher()
 
         while true {
@@ -297,6 +311,19 @@ class InjectionServer: SimpleSocket {
                 if readString() == nil {
                     error("**** Bad replay completion ****")
                 }
+            case .swiftSimClient:
+                guard let json = readString(maxLength: 16_384),
+                      let data = json.data(using: .utf8),
+                      let metadata = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                      metadata["protocol"] as? Int == 1,
+                      let identity = metadata["identity"] as? [String: Any],
+                      let capabilities = metadata["capabilities"] as? [String], capabilities.count <= 16,
+                      ["bundle_id", "build_number", "executable_uuid", "debug_dylib_uuid", "process_nonce", "connection_nonce"].allSatisfy({ key in
+                          guard let value = identity[key] as? String else { return false }
+                          return value.utf8.count <= 256
+                      }), identity["is_active"] is Bool, identity["root_ready"] is Bool,
+                      let revision = identity["root_revision"] as? Int, revision >= 0 else { return }
+                Self.clientQueue.sync { swiftSimMetadata = metadata }
             case .detail:
                 if let detail = readString() {
                     setenv(INJECTION_DETAIL, detail, 1)
@@ -317,11 +344,15 @@ class InjectionServer: SimpleSocket {
                 AppDelegate.ui.setMenuIcon(.error)
                 ControlServer.recordInjectionResult(succeeded: false)
             case .patchResult:
-                guard let json = readString(),
+                guard let json = readString(maxLength: 65_536),
                       let data = json.data(using: .utf8),
                       let report = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                     error("**** Bad patch result ****")
                     ControlServer.recordInjectionResult(succeeded: false)
+                    continue
+                }
+                if report["request_id"] is String {
+                    PreparedDeliveryEngine.record(report, from: self)
                     continue
                 }
                 let succeeded = report["succeeded"] as? Bool == true

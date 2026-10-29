@@ -11,6 +11,19 @@
 //
 
 #import <Foundation/Foundation.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
+void InjectionWakeConnection(void);
+void InjectionSetExecutionActive(BOOL active);
+NSTimeInterval InjectionReconnectDelay(NSUInteger failureCount);
+void InjectionSetRootReady(BOOL ready, NSUInteger revision);
+BOOL InjectionWaitForRootReady(NSTimeInterval expiresAt);
+NSDictionary * _Nonnull InjectionClientExecutionState(void);
+NSString * _Nonnull InjectionImageUUID(BOOL debugDylib);
+#ifdef __cplusplus
+}
+#endif
 
 #define HOTRELOADING_PORT ":8887"
 #define HOTRELOADING_MULTICAST "239.255.255.239"
@@ -46,6 +59,7 @@ typedef NS_ENUM(int, InjectionCommand) {
     InjectionScreenshot,
     InjectionReplayEvents,
     InjectionCaptureEvents,
+    InjectionPreparedInject,
 
     InjectionInvalid = 1000,
 
@@ -67,6 +81,7 @@ typedef NS_ENUM(int, InjectionResponse) {
     InjectionTouchEvent,
     InjectionReplayComplete,
     InjectionPatchResult,
+    InjectionSwiftSimClient,
 
     InjectionExit = ~0
 };

@@ -227,6 +227,18 @@ class ControlServer {
             }
             return injectSource(path: path)
 
+        case "prepare_dylib":
+            guard AppDelegate.isSwiftSimEngine else { return .fail("PREPARED_PRIVATE_ENGINE_REQUIRED") }
+            return PreparedDeliveryEngine.prepare(params)
+
+        case "inject_prepared":
+            guard AppDelegate.isSwiftSimEngine else { return .fail("PREPARED_PRIVATE_ENGINE_REQUIRED") }
+            return PreparedDeliveryEngine.inject(params)
+
+        case "prepared_receipt":
+            guard AppDelegate.isSwiftSimEngine else { return .fail("PREPARED_PRIVATE_ENGINE_REQUIRED") }
+            return PreparedDeliveryEngine.query(params)
+
         case "inject_dylib":
             guard let path = params["path"] as? String,
                   let source = params["source"] as? String else {
@@ -256,6 +268,12 @@ class ControlServer {
             result["last_source"] = NextCompiler.lastSource
             result["injection_state"] = ConfigStore.shared.injectionState.rawValue
             result["engine_mode"] = AppDelegate.isSwiftSimEngine
+            result["engine_instance_nonce"] = PreparedDeliveryEngine.instanceNonce
+            result["prepared_delivery_protocol"] = 1
+            if let (_, metadata) = InjectionServer.preparedTarget() {
+                result["client_identity"] = metadata["identity"]
+                result["client_capabilities"] = metadata["capabilities"]
+            }
             result["codesigning_identity_configured"] =
                 !(ConfigStore.shared.codesigningIdentity ?? "").isEmpty
             result["project_path"] = ConfigStore.shared.projectPath

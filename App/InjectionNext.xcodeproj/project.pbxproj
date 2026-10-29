@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        CAFE00012F08000000000001 /* PreparedDelivery.swift in Sources */ = {isa = PBXBuildFile; fileRef = CAFE00002F08000000000001 /* PreparedDelivery.swift */; };
+        CAFE00032F08000000000001 /* PreparedDeliveryEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = CAFE00022F08000000000001 /* PreparedDeliveryEngine.swift */; };
 		2217BE812C0A65C20032A832 /* Fortify in Frameworks */ = {isa = PBXBuildFile; productRef = 2217BE802C0A65C20032A832 /* Fortify */; };
 		224E57FB2C08978F00B71C79 /* SwiftRegex in Frameworks */ = {isa = PBXBuildFile; productRef = 224E57FA2C08978F00B71C79 /* SwiftRegex */; };
 		224E57FE2C08BBE300B71C79 /* InjectionServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 224E57FD2C08BBE300B71C79 /* InjectionServer.swift */; };
@@ -173,6 +175,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+        CAFE00002F08000000000001 /* PreparedDelivery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PreparedDelivery.swift; path = ../../Sources/InjectionNext/PreparedDelivery.swift; sourceTree = "<group>"; };
+        CAFE00022F08000000000001 /* PreparedDeliveryEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedDeliveryEngine.swift; sourceTree = "<group>"; };
 		224E57FC2C08BAE200B71C79 /* InjectionClient.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = InjectionClient.h; path = ../../Sources/InjectionNextC/include/InjectionClient.h; sourceTree = "<group>"; };
 		224E57FD2C08BBE300B71C79 /* InjectionServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InjectionServer.swift; sourceTree = "<group>"; };
 		224E57FF2C08BC0E00B71C79 /* MonitorXcode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MonitorXcode.swift; sourceTree = "<group>"; };
@@ -571,6 +575,7 @@
 				BB6A56EF2C50E73600C92112 /* ConfigStore.swift */,
 				22B6459F2C18DD9D00F99B61 /* Unhider.swift */,
 				AA0000002F08000000000001 /* ControlServer.swift */,
+				CAFE00022F08000000000001 /* PreparedDeliveryEngine.swift */,
 				AAAA000000000000000000E1 /* LogManager.swift */,
 				224E57FC2C08BAE200B71C79 /* InjectionClient.h */,
 				BB67DBB21FB0CDA8000EAC8A /* SimpleSocket.h */,
@@ -596,6 +601,7 @@
 				BBDD84592C4FF645000F3124 /* ClientBoot.mm */,
 				BBDD843A2C4FE892000F3124 /* InjectionBoot.mm */,
 				BBDD84182C4FE7E6000F3124 /* InjectionNext.swift */,
+				CAFE00002F08000000000001 /* PreparedDelivery.swift */,
 				BBDD84532C4FEB16000F3124 /* TupleRegex.swift */,
 				BB42F9452EB63E3400FDBBCC /* InjectionLite */,
 				BB42F9372EB63C2900FDBBCC /* InjectionImpl */,
@@ -871,6 +877,7 @@
 				224E57FE2C08BBE300B71C79 /* InjectionServer.swift in Sources */,
 				22B645A02C18DD9D00F99B61 /* Unhider.swift in Sources */,
 				AA0000012F08000000000001 /* ControlServer.swift in Sources */,
+				CAFE00032F08000000000001 /* PreparedDeliveryEngine.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -879,6 +886,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				BBDD84422C4FEA4E000F3124 /* InjectionNext.swift in Sources */,
+				CAFE00012F08000000000001 /* PreparedDelivery.swift in Sources */,
 				BB42F8E12EB626F100FDBBCC /* SwiftAspects.swift in Sources */,
 				BB42F8E22EB626F100FDBBCC /* SwiftInterpose.swift in Sources */,
 				BB42F8E32EB626F100FDBBCC /* SwiftTrace.swift in Sources */,
