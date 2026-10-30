@@ -257,6 +257,7 @@ class ControlServer {
 
     private func getStatus() -> ActionResult {
         var result = [String: Any]()
+        var compilationPlatform = "iPhoneOS"
         DispatchQueue.main.sync {
             guard let delegate = AppDelegate.ui else { return }
             result["xcode_running"] = MonitorXcode.runningXcode != nil
@@ -280,9 +281,7 @@ class ControlServer {
             result["codesigning_identity_configured"] =
                 !(ConfigStore.shared.codesigningIdentity ?? "").isEmpty
             result["project_path"] = ConfigStore.shared.projectPath
-            let platform = InjectionServer.currentClient?.platform ?? "iPhoneOS"
-            result["captured_compilations"] =
-                FrontendServer.frontendRecompiler(for: platform).compilations.count
+            compilationPlatform = InjectionServer.currentClient?.platform ?? "iPhoneOS"
             result["injection_request_id"] = Self.injectionRequestID
             result["completed_injection_request_id"] =
                 Self.completedInjectionRequestID
@@ -290,6 +289,11 @@ class ControlServer {
             result["last_injection_completed_at"] =
                 Self.lastInjectionCompletedAt
             result["last_patch_report"] = Self.lastPatchReport
+        }
+        // Keep dictionary reads with compiler-map mutation, outside the main
+        // thread block so a compiler waiting on UI work cannot deadlock status.
+        result["captured_compilations"] = NextCompiler.compileQueue.sync {
+            FrontendServer.frontendRecompiler(for: compilationPlatform).compilations.count
         }
         return .ok(result)
     }
