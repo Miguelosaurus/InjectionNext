@@ -62,7 +62,7 @@ open class InjectionNext: SimpleSocket {
             if negotiate { self.preparedDeliveryNegotiated = true }
             guard self.preparedDeliveryNegotiated else { return }
             let payload: [String: Any] = ["protocol": 1, "identity": self.clientIdentity(),
-                "capabilities": ["prepared-delivery-v1", "reconnect-v1", "receipt-v1"]]
+                "capabilities": PreparedPatchEvidence.clientCapabilities]
             guard let data = try? JSONSerialization.data(withJSONObject: payload),
                   let json = String(data: data, encoding: .utf8) else { return }
             _ = self.writeCommand(InjectionResponse.swiftSimClient.rawValue, with: json)
@@ -367,7 +367,7 @@ open class InjectionNext: SimpleSocket {
                     traceCalls(toFrameworks: String(cString: tracing),
                                images: [image])
                 }
-                let dynamicReplacements = image.swiftSymbols(withSuffixes: ["TI"]).count
+                let dynamicReplacements = PreparedPatchEvidence.dynamicReplacementCount(in: image)
                 let objcCategories = image.entries(withPrefix: "_OBJC_$_CATEGORY_").count
                 var refreshRevision: Int?
                 let acknowledgement = NotificationCenter.default.addObserver(
@@ -385,7 +385,7 @@ open class InjectionNext: SimpleSocket {
                     let refreshAcknowledged = refreshRevision != nil
                     let applied = managedPatch ? dynamicReplacements > 0 : true
                     let succeeded = applied && (!managedPatch || refreshAcknowledged)
-                    let report: [String: Any] = [
+                    var report: [String: Any] = [
                         "succeeded": succeeded,
                         "applied": applied,
                         "new_classes": classes.new.count,
@@ -394,6 +394,8 @@ open class InjectionNext: SimpleSocket {
                         "refresh_acknowledged": refreshAcknowledged,
                         "revision": refreshRevision ?? 0
                     ]
+                    if !applied { report["error_code"] = "PREPARED_DYNAMIC_REPLACEMENTS_MISSING" }
+                    else if !refreshAcknowledged { report["error_code"] = "PREPARED_REFRESH_UNCONFIRMED" }
                     let data = try? JSONSerialization.data(withJSONObject: report)
                     let json = data.flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
                     defer { Self.applyGate.signal() }

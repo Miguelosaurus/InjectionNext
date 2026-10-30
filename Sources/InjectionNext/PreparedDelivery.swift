@@ -2,6 +2,18 @@
 import Foundation
 import CryptoKit
 
+/// Count loaded Swift replacement definitions. A compiler emits a `TX`
+/// replacement variable and may also emit a `TI` implementation variable. The
+/// linker can dead-strip the unused TI while retaining the active replacement.
+enum PreparedPatchEvidence {
+    static let clientCapabilities = ["prepared-delivery-v1", "reconnect-v1", "receipt-v1", "replacement-proof-v2"]
+
+    static func dynamicReplacementCount(in image: ImageSymbols) -> Int {
+        Set(image.swiftSymbols(withSuffixes: ["TI", "TX"])
+            .map { String($0.symbol.dropLast(2)) }).count
+    }
+}
+
 /// A process-lifetime receipt ledger. It never evicts an accepted request and
 /// therefore cannot turn an ambiguous transport retry into a second apply.
 /// Capacity exhaustion fails closed until the next normal app process launch.
