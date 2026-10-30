@@ -14,6 +14,93 @@ enum PreparedPatchEvidence {
     }
 }
 
+/// Local Debug presentation only. This channel never changes admission,
+/// application, the root revision, or receipt ownership. In particular, a
+/// loaded library or a presentation timer cannot publish a successful update.
+final class PreparedDeliveryFeedback {
+    static let shared = PreparedDeliveryFeedback()
+    static let notification = Notification.Name("SWIFT_SIM_LIVE_DELIVERY_FEEDBACK")
+    private struct Active {
+        let requestID: String
+        let digest: String
+        let baseline: Int
+        var rank: Int
+    }
+    private let lock = NSLock()
+    private var active: Active?
+    private var sequence = 0
+    private let publish: ([String: Any]) -> Void
+
+    init(publish: @escaping ([String: Any]) -> Void = {
+        NotificationCenter.default.post(name: PreparedDeliveryFeedback.notification,
+                                        object: nil, userInfo: $0)
+    }) { self.publish = publish }
+
+    func begin(_ request: [String: Any]) {
+        guard let id = request["request_id"] as? String, UUID(uuidString: id) != nil,
+              let digest = request["patch_digest"] as? String, digest.count == 64,
+              digest.allSatisfy({ $0.isHexDigit && !$0.isUppercase }),
+              let baseline = request["baseline_revision"] as? Int, baseline >= 0 else { return }
+        lock.lock()
+        active = Active(requestID: id, digest: digest, baseline: baseline, rank: 0)
+        let event = eventLocked(phase: "receiving", rank: 0, request: request)
+        lock.unlock()
+        deliver(event)
+    }
+
+    func advance(_ request: [String: Any], phase: String) {
+        let rank: Int
+        switch phase {
+        case "applying": rank = 1
+        case "waiting-for-refresh": rank = 2
+        default: return
+        }
+        lock.lock()
+        let event = eventLocked(phase: phase, rank: rank, request: request)
+        lock.unlock()
+        deliver(event)
+    }
+
+    func finish(_ request: [String: Any], report: [String: Any]) {
+        lock.lock()
+        guard let current = active,
+              current.requestID == request["request_id"] as? String,
+              current.digest == request["patch_digest"] as? String else { lock.unlock(); return }
+        let revision = report["root_revision"] as? Int ?? report["revision"] as? Int ?? 0
+        let refreshed = report["applied"] as? Bool == true
+            && (report["dynamic_replacements"] as? Int ?? 0) > 0
+            && report["refresh_acknowledged"] as? Bool == true
+            && revision > current.baseline
+        var event = eventLocked(phase: refreshed ? "refreshed" : "failed", rank: 3, request: request)
+        event?["applied"] = report["applied"] as? Bool == true
+        event?["dynamic_replacements"] = report["dynamic_replacements"] as? Int ?? 0
+        event?["refresh_acknowledged"] = report["refresh_acknowledged"] as? Bool == true
+        event?["revision"] = revision
+        lock.unlock()
+        deliver(event)
+    }
+
+    private func eventLocked(phase: String, rank: Int, request: [String: Any]) -> [String: Any]? {
+        guard var current = active,
+              current.requestID == request["request_id"] as? String,
+              current.digest == request["patch_digest"] as? String,
+              current.rank <= rank, current.rank < 3 else { return nil }
+        current.rank = rank
+        active = current
+        sequence += 1
+        return ["schema_version": 1, "request_id": current.requestID,
+                "patch_digest": current.digest, "baseline_revision": current.baseline,
+                "phase": phase, "sequence": sequence]
+    }
+
+    private func deliver(_ event: [String: Any]?) {
+        guard let event else { return }
+        let publish = self.publish
+        if Thread.isMainThread { publish(event) }
+        else { DispatchQueue.main.async { publish(event) } }
+    }
+}
+
 /// A process-lifetime receipt ledger. It never evicts an accepted request and
 /// therefore cannot turn an ambiguous transport retry into a second apply.
 /// Capacity exhaustion fails closed until the next normal app process launch.
@@ -27,7 +114,10 @@ final class PreparedDeliveryLedger {
     private let lock = NSLock()
     private var entries: [String: Entry] = [:]
     private let capacity: Int
-    init(capacity: Int = 1_024) { self.capacity = capacity }
+    private let feedback: PreparedDeliveryFeedback?
+    init(capacity: Int = 1_024, feedback: PreparedDeliveryFeedback? = .shared) {
+        self.capacity = capacity; self.feedback = feedback
+    }
 
     static func digest(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
@@ -76,6 +166,7 @@ final class PreparedDeliveryLedger {
         guard entries.count < capacity else { lock.unlock(); return reject("PREPARED_RECEIPT_CAPACITY") }
         entries[requestID] = Entry(digest: digest, callbacks: [deliver])
         lock.unlock()
+        feedback?.begin(request)
         return true
     }
 
@@ -97,6 +188,7 @@ final class PreparedDeliveryLedger {
         entry.callbacks.removeAll()
         entries[requestID] = entry
         lock.unlock()
+        feedback?.finish(request, report: result)
         callbacks.forEach { $0(result) }
     }
 

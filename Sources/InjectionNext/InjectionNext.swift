@@ -358,6 +358,7 @@ open class InjectionNext: SimpleSocket {
                     return
                 }
             }
+            if let prepared { PreparedDeliveryFeedback.shared.advance(prepared, phase: "applying") }
             Reloader.injectionNumber += 1
             log("Loading live patch \(URL(fileURLWithPath: dylib).lastPathComponent)")
             if let (image, classes) = Reloader.injectionQueue
@@ -377,6 +378,7 @@ open class InjectionNext: SimpleSocket {
                 ) { notification in
                     refreshRevision = notification.userInfo?["revision"] as? Int
                 }
+                if let prepared { PreparedDeliveryFeedback.shared.advance(prepared, phase: "waiting-for-refresh") }
                 loader.sweeper.sweepAndRunTests(image: image, classes: classes)
                 DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(10)) {
                     NotificationCenter.default.removeObserver(acknowledgement)
