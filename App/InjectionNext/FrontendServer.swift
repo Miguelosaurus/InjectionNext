@@ -46,6 +46,7 @@ class FrontendServer: SimpleSocket {
     static func cacheURL(platform: String) -> URL {
         return URL(fileURLWithPath: Reloader.tmpbase+"_\(platform)_builds.json")
     }
+    static var registrationCacheURL: URL { URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".swift-sim/live/engine-compilation-map.json") }
     static private var recompilersLock = os_unfair_lock()
     static private var recompilers = [String: NextCompiler]()
     static func frontendRecompiler(for platform: String = clientPlatform) -> NextCompiler {
@@ -56,10 +57,19 @@ class FrontendServer: SimpleSocket {
         }
         let recompiler = NextCompiler(name: platform)
         do {
-            let compressed = cacheURL(platform: platform).path+".gz"
-            if Fstat(path: compressed)?.st_size ?? 0 != 0,
-               let stream = Popen(cmd: "gunzip <"+compressed),
-               let cached = stream.readAll().data(using: .utf8) {
+            let cache = cacheURL(platform: platform)
+            let compressed = cache.path+".gz"
+            let cached: Data?
+            if AppDelegate.isSwiftSimEngine && FileManager.default.fileExists(atPath: registrationCacheURL.path) {
+                let all = try JSONDecoder().decode([String: [String: NextCompiler.Compilation]].self, from: CompilationRegistrationSnapshotStore.read(registrationCacheURL) ?? Data())
+                cached = try JSONEncoder().encode(all[platform] ?? [:])
+            } else if FileManager.default.fileExists(atPath: cache.path) {
+                cached = try Data(contentsOf: cache)
+            } else if Fstat(path: compressed)?.st_size ?? 0 != 0,
+                      let stream = Popen(cmd: "gunzip <"+compressed) {
+                cached = stream.readAll().data(using: .utf8)
+            } else { cached = nil }
+            if let cached {
                 let stored = try JSONDecoder().decode(
                     [String: NextCompiler.Compilation].self, from: cached)
                 for source in stored.keys.sorted() {

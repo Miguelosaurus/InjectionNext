@@ -26,6 +26,8 @@ class ControlServer {
     static var lastInjectionCompletedAt: TimeInterval?
     static var lastPatchReport: [String: Any]?
 
+    private static let registrations = CompilationRegistrationRegistry(instanceNonce: PreparedDeliveryEngine.instanceNonce, enqueue: { operation in NextCompiler.compileQueue.async(execute: operation) })
+
     private var serverSocket: Int32 = -1
     private let queue = DispatchQueue(label: "ControlServer", attributes: .concurrent)
 
@@ -103,19 +105,9 @@ class ControlServer {
 
     private func handleClient(_ sock: Int32) {
         defer { close(sock) }
-
-        let maxRequestSize = 64 * 1024
-        var data = Data()
-        var buf = [UInt8](repeating: 0, count: 4096)
-        while true {
-            let n = recv(sock, &buf, buf.count, 0)
-            guard n > 0 else { break }
-            data.append(contentsOf: buf[0..<n])
-            if data.contains(UInt8(ascii: "\n")) { break }
-            if data.count > maxRequestSize {
-                sendResponse(sock, success: false, error: "Request too large")
-                return
-            }
+        guard let data = try? CompilationControlTransport.read(sock) else {
+            sendResponse(sock, success: false, error: "Control request incomplete, oversized or timed out")
+            return
         }
 
         guard !data.isEmpty,
@@ -125,6 +117,10 @@ class ControlServer {
             return
         }
 
+        if data.count > 64 * 1024 && action != "register_compilation_map" {
+            sendResponse(sock, success: false, error: "Request too large")
+            return
+        }
         let result = executeAction(action, params: json)
         sendResponse(sock, success: result.success, data: result.data, error: result.error)
         Self.servicedRequest = true
@@ -136,10 +132,7 @@ class ControlServer {
         if let data = data { response["data"] = data }
         guard let jsonData = try? JSONSerialization.data(withJSONObject: response),
               let jsonStr = String(data: jsonData, encoding: .utf8) else { return }
-        let line = jsonStr + "\n"
-        _ = line.withCString { ptr in
-            send(sock, ptr, strlen(ptr), 0)
-        }
+        _ = CompilationControlTransport.write(Data((jsonStr + "\n").utf8), socket: sock)
     }
 
     struct ActionResult {
@@ -215,7 +208,16 @@ class ControlServer {
         case "clear_logs":
             return clearLogs()
 
+        case "compilation_registration_status":
+            guard AppDelegate.isSwiftSimEngine else { return .fail("COMPILATION_REGISTRATION_PRIVATE_ENGINE_REQUIRED") }
+            return Self.registrations.query(params)
+
+        case "register_compilation_map":
+            guard AppDelegate.isSwiftSimEngine else { return .fail("COMPILATION_REGISTRATION_PRIVATE_ENGINE_REQUIRED") }
+            return Self.registrations.begin(params, apply: self.commitCompilationMap)
+
         case "register_compilations":
+            guard !AppDelegate.isSwiftSimEngine else { return .fail("COMPILATION_REGISTRATION_TRANSACTION_REQUIRED") }
             guard let commands = params["commands"] as? [[String: Any]] else {
                 return .fail("Missing 'commands' parameter")
             }
@@ -270,6 +272,7 @@ class ControlServer {
             result["engine_mode"] = AppDelegate.isSwiftSimEngine
             result["engine_instance_nonce"] = PreparedDeliveryEngine.instanceNonce
             result["prepared_delivery_protocol"] = 1
+            result["compilation_registration_protocol"] = 1
             if let (_, metadata) = InjectionServer.preparedTarget() {
                 result["client_identity"] = metadata["identity"]
                 result["client_capabilities"] = metadata["capabilities"]
@@ -289,6 +292,41 @@ class ControlServer {
             result["last_patch_report"] = Self.lastPatchReport
         }
         return .ok(result)
+    }
+
+    private func commitCompilationMap(_ commands: [[String: Any]], permit: () -> Bool) throws -> CompilationRegistrationRegistry.Outcome {
+        struct InvalidMap: Error {}
+        var maps: [String: [String: NextCompiler.Compilation]] = [:]
+        for command in commands {
+            guard let arguments = command["arguments"] as? [String], let directory = command["working_directory"] as? String else { throw InvalidMap() }
+            var parser = FrontendServer.CompilationArgParser(); parser.workingDir = directory
+            var index = 2
+            while index < arguments.count {
+                let argument = arguments[index]; index += 1
+                parser.process(arg: argument) {
+                    guard index < arguments.count else { return nil }
+                    defer { index += 1 }; return arguments[index]
+                }
+            }
+            let sources = parser.primaries.isEmpty ? parser.swiftFiles.components(separatedBy: .newlines).filter { !$0.isEmpty } : parser.primaries
+            guard !sources.isEmpty else { throw InvalidMap() }
+            let compilation = NextCompiler.Compilation(arguments: parser.args, swiftFiles: parser.swiftFiles, workingDir: parser.workingDir, env: nil)
+            for source in sources { maps[parser.platform, default: [:]][source] = compilation }
+        }
+        guard !maps.isEmpty, permit() else { throw InvalidMap() }
+        // Install from a fully parsed map on the compiler owner queue. Never call
+        // store(): pendingSource callbacks must not turn metadata resume into an injection.
+        // One atomic publication covers every platform. A crash or a failed
+        // write cannot expose one platform from a new map beside another old map.
+        try CompilationRegistrationSnapshotStore.write(JSONEncoder().encode(maps), to: FrontendServer.registrationCacheURL)
+        for (platform, map) in maps {
+            let compiler = FrontendServer.frontendRecompiler(for: platform)
+            compiler.compilations = map; compiler.lastCompilation = nil; compiler.modified = false
+        }
+        // Durable cache compression is not a prerequisite to a qualified map.
+        // ReadCache prefers the freshly written uncompressed cache (below).
+        let sources = maps.values.flatMap { $0.keys }
+        return CompilationRegistrationRegistry.Outcome(registeredCount: sources.count, sources: sources)
     }
 
     private func registerCompilations(_ commands: [[String: Any]]) -> ActionResult {
