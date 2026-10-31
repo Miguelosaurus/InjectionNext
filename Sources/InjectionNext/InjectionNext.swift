@@ -346,16 +346,38 @@ open class InjectionNext: SimpleSocket {
         var loader = Reloader() // InjectionLite injection implementation
         func injectAndSweep(_ dylib: String, prepared: [String: Any]? = nil, identity: [String: Any] = [:]) {
             Self.applyGate.wait()
+            let replacementProof: PreparedReplacementProof?
+            var callbackCaptures: [PreparedReplacementProof.Capture] = []
+            do { replacementProof = try PreparedReplacementProof.parse(prepared?["replacement_proof"]) }
+            catch {
+                if let prepared {
+                    PreparedDeliveryLedger.shared.finish(request: prepared, identity: identity,
+                        report: ["succeeded": false, "applied": false, "refresh_acknowledged": false,
+                                 "admission": "rejected-before-load", "error_code": "PREPARED_REPLACEMENT_PROOF_INVALID"])
+                }
+                Self.applyGate.signal(); return
+            }
             if let prepared {
                 let expiry = (prepared["expires_at_ms"] as? Double ?? 0) / 1_000
                 let ready = InjectionWaitForRootReady(expiry)
                 let state = InjectionClientExecutionState() as? [String: Any] ?? [:]
-                guard ready, state["root_revision"] as? Int == prepared["baseline_revision"] as? Int else {
+                guard ready, PreparedReplacementProof.integer(state["root_revision"]) == PreparedReplacementProof.integer(prepared["baseline_revision"]) else {
                     PreparedDeliveryLedger.shared.finish(request: prepared, identity: identity,
                         report: ["succeeded": false, "applied": false, "refresh_acknowledged": false,
                                  "error_code": ready ? "PREPARED_BASELINE_MISMATCH" : "PREPARED_REQUEST_EXPIRED"])
                     Self.applyGate.signal()
                     return
+                }
+            }
+            if let replacementProof {
+                do { callbackCaptures = try replacementProof.capture() }
+                catch {
+                    if let prepared {
+                        PreparedDeliveryLedger.shared.finish(request: prepared, identity: identity,
+                            report: ["succeeded": false, "applied": false, "refresh_acknowledged": false,
+                                     "admission": "rejected-before-load", "error_code": "PREPARED_OBJC_PREFLIGHT_FAILED"])
+                    }
+                    Self.applyGate.signal(); return
                 }
             }
             if let prepared { PreparedDeliveryFeedback.shared.advance(prepared, phase: "applying") }
@@ -376,7 +398,7 @@ open class InjectionNext: SimpleSocket {
                     object: nil,
                     queue: nil
                 ) { notification in
-                    refreshRevision = notification.userInfo?["revision"] as? Int
+                    refreshRevision = PreparedReplacementProof.integer(notification.userInfo?["revision"])
                 }
                 if let prepared { PreparedDeliveryFeedback.shared.advance(prepared, phase: "waiting-for-refresh") }
                 loader.sweeper.sweepAndRunTests(image: image, classes: classes)
@@ -385,8 +407,14 @@ open class InjectionNext: SimpleSocket {
                     let managedPatch = URL(fileURLWithPath: dylib)
                         .lastPathComponent.contains("swift_sim_dynamic")
                     let refreshAcknowledged = refreshRevision != nil
-                    let applied = managedPatch ? dynamicReplacements > 0 : true
-                    let succeeded = applied && (!managedPatch || refreshAcknowledged)
+                    let coverage = replacementProof?.evaluate(captures: callbackCaptures, imagePath: image.imagePath, swiftCount: dynamicReplacements)
+                    let expectedImage = URL(fileURLWithPath: dylib).standardizedFileURL.resolvingSymlinksInPath().path
+                    let actualImage = URL(fileURLWithPath: image.imagePath).standardizedFileURL.resolvingSymlinksInPath().path
+                    let applied = replacementProof != nil
+                        ? coverage?["complete_replacement_coverage"] as? Bool == true && expectedImage == actualImage
+                        : managedPatch ? dynamicReplacements > 0 : true
+                    let revisionAdvanced = replacementProof == nil || (refreshRevision ?? 0) > (PreparedReplacementProof.integer(prepared?["baseline_revision"]) ?? 0)
+                    let succeeded = applied && (!(managedPatch || replacementProof != nil) || refreshAcknowledged) && revisionAdvanced
                     var report: [String: Any] = [
                         "succeeded": succeeded,
                         "applied": applied,
@@ -396,14 +424,20 @@ open class InjectionNext: SimpleSocket {
                         "refresh_acknowledged": refreshAcknowledged,
                         "revision": refreshRevision ?? 0
                     ]
-                    if !applied { report["error_code"] = "PREPARED_DYNAMIC_REPLACEMENTS_MISSING" }
+                    if let coverage {
+                        report.merge(coverage, uniquingKeysWith: { _, latest in latest })
+                        report["admission"] = succeeded ? "applied" : "uncertain-after-load"
+                        report["state_uncertain"] = !succeeded
+                    }
+                    if !applied { report["error_code"] = replacementProof == nil ? "PREPARED_DYNAMIC_REPLACEMENTS_MISSING" : "PREPARED_REPLACEMENT_COVERAGE_UNPROVEN" }
                     else if !refreshAcknowledged { report["error_code"] = "PREPARED_REFRESH_UNCONFIRMED" }
+                    else if !revisionAdvanced { report["error_code"] = "PREPARED_REVISION_UNCONFIRMED" }
                     let data = try? JSONSerialization.data(withJSONObject: report)
                     let json = data.flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
                     defer { Self.applyGate.signal() }
                     self.log(succeeded ? "Live patch applied" : "Live patch rejected")
                     if let prepared {
-                        PreparedDeliveryLedger.shared.finish(request: prepared, identity: identity, report: report)
+                        PreparedDeliveryLedger.shared.finish(request: prepared, identity: self.clientIdentity(), report: report)
                     } else {
                         self.sendResponse(.patchResult, with: json)
                     }
@@ -412,8 +446,9 @@ open class InjectionNext: SimpleSocket {
                 Self.applyGate.signal()
                 log("Live patch could not be loaded")
                 if let prepared {
-                    PreparedDeliveryLedger.shared.finish(request: prepared, identity: identity,
+                    PreparedDeliveryLedger.shared.finish(request: prepared, identity: self.clientIdentity(),
                         report: ["succeeded": false, "applied": false, "refresh_acknowledged": false,
+                                 "admission": "uncertain-after-load", "state_uncertain": true,
                                  "error_code": "PREPARED_LOAD_FAILED"])
                 } else {
                     sendResponse(.unhide)

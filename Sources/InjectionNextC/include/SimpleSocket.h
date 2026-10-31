@@ -11,6 +11,7 @@
 #import <Foundation/Foundation.h>
 #import <arpa/inet.h>
 #import <stdio.h>
+#import "PreparedProofPointer.h"
 
 @interface SimpleSocket : NSObject {
 @protected

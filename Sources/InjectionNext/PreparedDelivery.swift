@@ -6,7 +6,7 @@ import CryptoKit
 /// replacement variable and may also emit a `TI` implementation variable. The
 /// linker can dead-strip the unused TI while retaining the active replacement.
 enum PreparedPatchEvidence {
-    static let clientCapabilities = ["prepared-delivery-v1", "reconnect-v1", "receipt-v1", "replacement-proof-v2"]
+    static let clientCapabilities = ["prepared-delivery-v1", "reconnect-v1", "receipt-v1", "replacement-proof-v2", "replacement-proof-v3"]
 
     static func dynamicReplacementCount(in image: ImageSymbols) -> Int {
         Set(image.swiftSymbols(withSuffixes: ["TI", "TX"])
@@ -40,7 +40,7 @@ final class PreparedDeliveryFeedback {
         guard let id = request["request_id"] as? String, UUID(uuidString: id) != nil,
               let digest = request["patch_digest"] as? String, digest.count == 64,
               digest.allSatisfy({ $0.isHexDigit && !$0.isUppercase }),
-              let baseline = request["baseline_revision"] as? Int, baseline >= 0 else { return }
+              let baseline = PreparedReplacementProof.integer(request["baseline_revision"]), baseline >= 0 else { return }
         lock.lock()
         active = Active(requestID: id, digest: digest, baseline: baseline, rank: 0)
         let event = eventLocked(phase: "receiving", rank: 0, request: request)
@@ -67,8 +67,11 @@ final class PreparedDeliveryFeedback {
               current.requestID == request["request_id"] as? String,
               current.digest == request["patch_digest"] as? String else { lock.unlock(); return }
         let revision = report["root_revision"] as? Int ?? report["revision"] as? Int ?? 0
+        let represented = report["replacement_proof_version"] as? Int == 3
+            ? (report["complete_replacement_coverage"] as? Bool == true && (report["represented_replacements"] as? Int ?? 0) > 0)
+            : (report["dynamic_replacements"] as? Int ?? 0) > 0
         let refreshed = report["applied"] as? Bool == true
-            && (report["dynamic_replacements"] as? Int ?? 0) > 0
+            && represented
             && report["refresh_acknowledged"] as? Bool == true
             && revision > current.baseline
         var event = eventLocked(phase: refreshed ? "refreshed" : "failed", rank: 3, request: request)
@@ -108,6 +111,10 @@ final class PreparedDeliveryLedger {
     static let shared = PreparedDeliveryLedger()
     struct Entry {
         let digest: String
+        let coverageDigest: String
+        let attemptID: String
+        let baselineRevision: Int
+        let expectedIdentity: [String: String]
         var report: [String: Any]?
         var callbacks: [([String: Any]) -> Void]
     }
@@ -137,7 +144,7 @@ final class PreparedDeliveryLedger {
               digest.count == 64, digest.allSatisfy({ $0.isHexDigit && !$0.isUppercase }),
               let expiry = request["expires_at_ms"] as? Double, expiry.isFinite,
               expiry > now, expiry <= now + 86_400_000,
-              let baseline = request["baseline_revision"] as? Int, baseline >= 0,
+              let baseline = PreparedReplacementProof.integer(request["baseline_revision"]), baseline >= 0,
               let attemptID = request["attempt_id"] as? String, !attemptID.isEmpty,
               attemptID.utf8.count <= 128 else {
             return reject("PREPARED_REQUEST_INVALID_OR_EXPIRED")
@@ -150,9 +157,15 @@ final class PreparedDeliveryLedger {
                   value == identity[key] as? String else { return reject("PREPARED_IDENTITY_MISMATCH") }
         }
         guard Self.digest(data) == digest else { return reject("PREPARED_DIGEST_MISMATCH") }
+        let proof: PreparedReplacementProof?
+        do { proof = try PreparedReplacementProof.parse(request["replacement_proof"]) }
+        catch { return reject("PREPARED_REPLACEMENT_PROOF_INVALID") }
+        let coverageDigest = proof?.digest ?? ""
         lock.lock()
         if var entry = entries[requestID] {
-            guard entry.digest == digest else { lock.unlock(); return reject("PREPARED_REQUEST_CONFLICT") }
+            guard entry.digest == digest, entry.coverageDigest == coverageDigest,
+                  entry.expectedIdentity.allSatisfy({ expected[$0.key] as? String == $0.value }),
+                  proof == nil || (entry.attemptID == attemptID && entry.baselineRevision == baseline) else { lock.unlock(); return reject("PREPARED_REQUEST_CONFLICT") }
             if let report = entry.report { lock.unlock(); deliver(report); return false }
             guard entry.callbacks.count < 16 else { lock.unlock(); return reject("PREPARED_RECEIPT_BUSY") }
             entry.callbacks.append(deliver)
@@ -162,9 +175,9 @@ final class PreparedDeliveryLedger {
         }
         guard identity["is_active"] as? Bool == true,
               identity["root_ready"] as? Bool == true else { lock.unlock(); return reject("PREPARED_WAITING_FOR_FOREGROUND", noEffect: true) }
-        guard identity["root_revision"] as? Int == baseline else { lock.unlock(); return reject("PREPARED_BASELINE_MISMATCH", noEffect: true) }
+        guard PreparedReplacementProof.integer(identity["root_revision"]) == baseline else { lock.unlock(); return reject("PREPARED_BASELINE_MISMATCH", noEffect: true) }
         guard entries.count < capacity else { lock.unlock(); return reject("PREPARED_RECEIPT_CAPACITY") }
-        entries[requestID] = Entry(digest: digest, callbacks: [deliver])
+        entries[requestID] = Entry(digest: digest, coverageDigest: coverageDigest, attemptID: attemptID, baselineRevision: baseline, expectedIdentity: expected.compactMapValues { $0 as? String }.filter { ["bundle_id", "build_number", "executable_uuid", "debug_dylib_uuid", "process_nonce"].contains($0.key) }, callbacks: [deliver])
         lock.unlock()
         feedback?.begin(request)
         return true
@@ -173,16 +186,30 @@ final class PreparedDeliveryLedger {
     func finish(request: [String: Any], identity: [String: Any], report: [String: Any]) {
         guard let requestID = request["request_id"] as? String,
               let digest = request["patch_digest"] as? String else { return }
+        let proof: PreparedReplacementProof?
+        do { proof = try PreparedReplacementProof.parse(request["replacement_proof"]) } catch { return }
         lock.lock()
-        guard var entry = entries[requestID], entry.digest == digest, entry.report == nil else {
+        guard var entry = entries[requestID], entry.digest == digest, entry.coverageDigest == (proof?.digest ?? ""),
+              proof == nil || request["attempt_id"] as? String == entry.attemptID,
+              proof == nil || PreparedReplacementProof.integer(request["baseline_revision"]) == entry.baselineRevision,
+              entry.report == nil else {
             lock.unlock(); return
         }
         var result = report
+        if !entry.expectedIdentity.allSatisfy({ identity[$0.key] as? String == $0.value }) {
+            // An accepted load may already have mutated the process. A stale
+            // completion must never turn this into a success or safe retry.
+            result = ["succeeded": false, "applied": false, "refresh_acknowledged": false,
+                      "admission": "uncertain-after-load", "state_uncertain": true,
+                      "error_code": "PREPARED_IDENTITY_CHANGED_AFTER_ADMISSION"]
+        }
         result["request_id"] = requestID
         result["patch_digest"] = digest
+        result["attempt_id"] = entry.attemptID
+        if let proof { result["replacement_proof_version"] = 3; result["coverage_digest"] = proof.digest }
         result["client_identity"] = identity
-        result["root_revision"] = report["root_revision"] ?? report["revision"] ?? 0
-        result["refreshed"] = report["refresh_acknowledged"] as? Bool == true
+        result["root_revision"] = result["root_revision"] ?? result["revision"] ?? 0
+        result["refreshed"] = result["refresh_acknowledged"] as? Bool == true
         entry.report = result
         let callbacks = entry.callbacks
         entry.callbacks.removeAll()
@@ -199,7 +226,10 @@ final class PreparedDeliveryLedger {
          "request_id": request["request_id"] as? String ?? "",
          "patch_digest": request["patch_digest"] as? String ?? "",
          "client_identity": identity]
-        if noEffect { result["attempt_id"] = request["attempt_id"] as? String ?? "" }
+        result["attempt_id"] = request["attempt_id"] as? String ?? ""
+        if let proof = try? PreparedReplacementProof.parse(request["replacement_proof"]) {
+            result["replacement_proof_version"] = 3; result["coverage_digest"] = proof.digest
+        }
         return result
     }
 }

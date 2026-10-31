@@ -9,12 +9,17 @@ enum PreparedDeliveryEngine {
     private struct Receipt {
         let digest: String
         let processNonce: String
+        let coverageDigest: String
+        let proof: PreparedReplacementProof?
+        let expectedIdentity: [String: String]
         var attemptID: String
+        var baselineRevision: Int
         var report: [String: Any]?
     }
     private static let queue = DispatchQueue(label: "SwiftSimPreparedReceipts")
     private static var receipts: [String: Receipt] = [:]
     static let capabilities = ["prepared-delivery-v1", "reconnect-v1", "receipt-v1"]
+    static let replacementProofProtocol = 3
 
     static func prepare(_ params: [String: Any]) -> ControlServer.ActionResult {
         guard let path = artifact(params["path"] as? String) else { return .fail("PREPARED_ARTIFACT_INVALID") }
@@ -35,11 +40,14 @@ enum PreparedDeliveryEngine {
     }
 
     static func inject(_ params: [String: Any]) -> ControlServer.ActionResult {
+        let proof: PreparedReplacementProof?
+        do { proof = try PreparedReplacementProof.parse(params["replacement_proof"]) }
+        catch { return .fail("PREPARED_REPLACEMENT_PROOF_INVALID") }
         guard let requestID = params["request_id"] as? String, UUID(uuidString: requestID) != nil,
               let patchDigest = params["patch_digest"] as? String, isDigest(patchDigest),
               let expiry = params["expires_at_ms"] as? Double, expiry.isFinite,
               expiry > now, expiry <= now + 86_400_000,
-              let baseline = params["baseline_revision"] as? Int, baseline >= 0,
+              let baseline = PreparedReplacementProof.integer(params["baseline_revision"]), baseline >= 0,
               let attemptID = params["attempt_id"] as? String, !attemptID.isEmpty, attemptID.utf8.count <= 128,
               let expected = params["expected_identity"] as? [String: Any],
               let processNonce = expected["process_nonce"] as? String else { return .fail("PREPARED_REQUEST_INVALID_OR_EXPIRED") }
@@ -47,6 +55,7 @@ enum PreparedDeliveryEngine {
               let identity = metadata["identity"] as? [String: Any],
               let clientCapabilities = metadata["capabilities"] as? [String],
               Set(capabilities).isSubset(of: Set(clientCapabilities)) else { return .fail("PREPARED_CLIENT_UNAVAILABLE") }
+        if proof != nil && !clientCapabilities.contains("replacement-proof-v3") { return .fail("PREPARED_REPLACEMENT_PROOF_UNSUPPORTED") }
         for key in ["bundle_id", "build_number", "executable_uuid", "debug_dylib_uuid", "process_nonce"] {
             guard let value = expected[key] as? String, !value.isEmpty,
                   value == identity[key] as? String else { return .fail("PREPARED_IDENTITY_MISMATCH") }
@@ -55,27 +64,42 @@ enum PreparedDeliveryEngine {
         guard let path = artifact(params["path"] as? String),
               let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe),
               !data.isEmpty, data.count <= 256 * 1_024 * 1_024, digest(data) == patchDigest else { return .fail("PREPARED_DIGEST_MISMATCH") }
-        let key = processNonce + ":" + requestID
-        let admitted: Bool = queue.sync {
-            if let receipt = receipts[key] { return receipt.digest == patchDigest }
-            guard receipts.count < 1_024 else { return false }
-            receipts[key] = Receipt(digest: patchDigest, processNonce: processNonce, attemptID: attemptID)
-            return true
-        }
-        guard admitted else { return .fail("PREPARED_RECEIPT_CONFLICT_OR_CAPACITY") }
-        if let receipt = receipt(requestID: requestID, digest: patchDigest, processNonce: processNonce), receipt["state"] as? String == "completed" {
-            return .ok(receipt)
-        }
-        queue.sync {
-            receipts[key]?.attemptID = attemptID
-            if receipts[key]?.report?["admission"] as? String == "rejected-no-effect" {
-                receipts[key]?.report = nil
-            }
-        }
-        let envelope: [String: Any] = ["request_id": requestID, "patch_digest": patchDigest,
+        var envelope: [String: Any] = ["request_id": requestID, "patch_digest": patchDigest,
             "expires_at_ms": expiry, "baseline_revision": baseline, "attempt_id": attemptID, "expected_identity": expected]
-        guard let encoded = try? JSONSerialization.data(withJSONObject: envelope),
+        if let proof { envelope["replacement_proof"] = proof.object }
+        guard let encoded = try? JSONSerialization.data(withJSONObject: envelope), encoded.count <= 16_384,
               let json = String(data: encoded, encoding: .utf8) else { return .fail("PREPARED_REQUEST_INVALID") }
+        let expectedStrings = Dictionary(uniqueKeysWithValues: ["bundle_id", "build_number", "executable_uuid", "debug_dylib_uuid", "process_nonce"].map { ($0, expected[$0] as! String) })
+        let key = processNonce + ":" + requestID
+        // Admission, duplicate lookup and retry ownership are one transaction.
+        // A second concurrent retry cannot overwrite the first attempt's claim.
+        let decision: (send: Bool, response: ControlServer.ActionResult) = queue.sync {
+            if var existing = receipts[key] {
+                guard existing.digest == patchDigest, existing.coverageDigest == (proof?.digest ?? ""),
+                      existing.expectedIdentity == expectedStrings else {
+                    return (false, .fail("PREPARED_RECEIPT_CONFLICT_OR_CAPACITY"))
+                }
+                let noEffect = existing.report?["admission"] as? String == "rejected-no-effect"
+                if noEffect && existing.attemptID != attemptID {
+                    existing.attemptID = attemptID
+                    existing.baselineRevision = baseline
+                    existing.report = nil
+                    receipts[key] = existing
+                } else {
+                    guard proof == nil || (existing.attemptID == attemptID && existing.baselineRevision == baseline) else {
+                        return (false, .fail("PREPARED_RECEIPT_CONFLICT_OR_CAPACITY"))
+                    }
+                    return (false, .ok(receiptObject(existing, requestID: requestID)))
+                }
+            } else {
+                guard receipts.count < 1_024 else { return (false, .fail("PREPARED_RECEIPT_CONFLICT_OR_CAPACITY")) }
+                receipts[key] = Receipt(digest: patchDigest, processNonce: processNonce, coverageDigest: proof?.digest ?? "",
+                                       proof: proof, expectedIdentity: expectedStrings, attemptID: attemptID, baselineRevision: baseline)
+            }
+            return (true, .ok(["request_id": requestID, "patch_digest": patchDigest, "state": "pending",
+                              "client_identity": identity, "engine_instance_nonce": instanceNonce]))
+        }
+        guard decision.send else { return decision.response }
         InjectionServer.clientQueue.async {
             // The captured client owns this write. A new connection cannot be
             // substituted after identity validation or between command/data.
@@ -99,12 +123,29 @@ enum PreparedDeliveryEngine {
         queue.sync {
             guard var receipt = receipts[key], receipt.digest == patchDigest,
                   receipt.report == nil || receipt.report?["admission"] as? String == "rejected-no-effect" else { return }
+            guard receipt.expectedIdentity.allSatisfy({ identity[$0.key] as? String == $0.value && reportIdentity[$0.key] as? String == $0.value }) else { return }
+            if let proof = receipt.proof {
+                guard PreparedReplacementProof.integer(report["replacement_proof_version"]) == 3,
+                      report["coverage_digest"] as? String == receipt.coverageDigest,
+                      report["attempt_id"] as? String == receipt.attemptID else { return }
+                guard let applied = PreparedReplacementProof.boolean(report["applied"]),
+                      let refreshed = PreparedReplacementProof.boolean(report["refresh_acknowledged"]),
+                      let succeeded = PreparedReplacementProof.boolean(report["succeeded"]) else { return }
+                guard !(applied && refreshed && !succeeded) else { return }
+                if applied && !proof.validatesSuccessfulReport(report) { return }
+                if succeeded {
+                    guard applied, refreshed,
+                          report["state_uncertain"] == nil || PreparedReplacementProof.boolean(report["state_uncertain"]) == false,
+                          (PreparedReplacementProof.integer(report["root_revision"] ?? report["revision"]) ?? 0) > receipt.baselineRevision else { return }
+                }
+            }
             // Only the authenticated client's explicit pre-admission proof may
             // make this request retryable. applied:false alone is insufficient.
             if report["admission"] as? String == "rejected-no-effect" {
                 guard report["attempt_id"] as? String == receipt.attemptID,
-                      report["applied"] as? Bool == false,
-                      report["refresh_acknowledged"] as? Bool == false,
+                      PreparedReplacementProof.boolean(report["applied"]) == false,
+                      PreparedReplacementProof.boolean(report["refresh_acknowledged"]) == false,
+                      report["state_uncertain"] == nil || PreparedReplacementProof.boolean(report["state_uncertain"]) == false,
                       ["PREPARED_WAITING_FOR_FOREGROUND", "PREPARED_BASELINE_MISMATCH"].contains(report["error_code"] as? String ?? "") else { return }
             }
             receipt.report = report
@@ -128,13 +169,19 @@ enum PreparedDeliveryEngine {
     private static func receipt(requestID: String, digest: String, processNonce: String) -> [String: Any]? {
         queue.sync {
             guard let receipt = receipts[processNonce + ":" + requestID], receipt.digest == digest else { return nil }
-            let state = receipt.report == nil ? "pending"
-                : receipt.report?["admission"] as? String == "rejected-no-effect" ? "rejected-no-effect" : "completed"
-            var result: [String: Any] = ["state": state, "request_id": requestID,
-                    "patch_digest": digest, "process_nonce": processNonce, "engine_instance_nonce": instanceNonce]
-            if let report = receipt.report { result["report"] = report }
-            return result
+            return receiptObject(receipt, requestID: requestID)
         }
+    }
+
+    /// Called only from the receipt queue; avoids nested queue.sync during claim.
+    private static func receiptObject(_ receipt: Receipt, requestID: String) -> [String: Any] {
+        let state = receipt.report == nil ? "pending"
+            : receipt.report?["admission"] as? String == "rejected-no-effect" ? "rejected-no-effect" : "completed"
+        var result: [String: Any] = ["state": state, "request_id": requestID,
+            "patch_digest": receipt.digest, "process_nonce": receipt.processNonce, "engine_instance_nonce": instanceNonce]
+        if receipt.proof != nil { result["replacement_proof_version"] = 3; result["coverage_digest"] = receipt.coverageDigest }
+        if let report = receipt.report { result["report"] = report }
+        return result
     }
 
     private static var now: Double { Date().timeIntervalSince1970 * 1_000 }

@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        CAFE00312F08000000000001 /* PreparedReplacementProof.swift in Client Sources */ = {isa = PBXBuildFile; fileRef = CAFE00302F08000000000001 /* PreparedReplacementProof.swift */; };
+        CAFE00322F08000000000001 /* PreparedReplacementProof.swift in Engine Sources */ = {isa = PBXBuildFile; fileRef = CAFE00302F08000000000001 /* PreparedReplacementProof.swift */; };
         CAFE00112F08000000000001 /* CompilationRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = CAFE00102F08000000000001 /* CompilationRegistration.swift */; };
         CAFE00012F08000000000001 /* PreparedDelivery.swift in Sources */ = {isa = PBXBuildFile; fileRef = CAFE00002F08000000000001 /* PreparedDelivery.swift */; };
         CAFE00032F08000000000001 /* PreparedDeliveryEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = CAFE00022F08000000000001 /* PreparedDeliveryEngine.swift */; };
@@ -176,6 +178,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+        CAFE00302F08000000000001 /* PreparedReplacementProof.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PreparedReplacementProof.swift; path = ../../Sources/InjectionNext/PreparedReplacementProof.swift; sourceTree = "<group>"; };
         CAFE00102F08000000000001 /* CompilationRegistration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompilationRegistration.swift; sourceTree = "<group>"; };
         CAFE00002F08000000000001 /* PreparedDelivery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PreparedDelivery.swift; path = ../../Sources/InjectionNext/PreparedDelivery.swift; sourceTree = "<group>"; };
         CAFE00022F08000000000001 /* PreparedDeliveryEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedDeliveryEngine.swift; sourceTree = "<group>"; };
@@ -605,6 +608,7 @@
 				BBDD843A2C4FE892000F3124 /* InjectionBoot.mm */,
 				BBDD84182C4FE7E6000F3124 /* InjectionNext.swift */,
 				CAFE00002F08000000000001 /* PreparedDelivery.swift */,
+                CAFE00302F08000000000001 /* PreparedReplacementProof.swift */,
 				BBDD84532C4FEB16000F3124 /* TupleRegex.swift */,
 				BB42F9452EB63E3400FDBBCC /* InjectionLite */,
 				BB42F9372EB63C2900FDBBCC /* InjectionImpl */,
@@ -882,6 +886,7 @@
 				AA0000012F08000000000001 /* ControlServer.swift in Sources */,
                 CAFE00112F08000000000001 /* CompilationRegistration.swift in Sources */,
 				CAFE00032F08000000000001 /* PreparedDeliveryEngine.swift in Sources */,
+                CAFE00322F08000000000001 /* PreparedReplacementProof.swift in Engine Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -891,6 +896,7 @@
 			files = (
 				BBDD84422C4FEA4E000F3124 /* InjectionNext.swift in Sources */,
 				CAFE00012F08000000000001 /* PreparedDelivery.swift in Sources */,
+                CAFE00312F08000000000001 /* PreparedReplacementProof.swift in Client Sources */,
 				BB42F8E12EB626F100FDBBCC /* SwiftAspects.swift in Sources */,
 				BB42F8E22EB626F100FDBBCC /* SwiftInterpose.swift in Sources */,
 				BB42F8E32EB626F100FDBBCC /* SwiftTrace.swift in Sources */,
