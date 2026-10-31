@@ -117,7 +117,7 @@ struct PreparedEngineTests {
              "client_identity": identity, "replacement_proof_version": 3, "coverage_digest": proof.digest,
              "expected_swift_replacements": 1, "dynamic_replacements": 1, "objc_replacements": 0,
              "represented_replacements": 1, "objc_callback_proofs": [], "complete_replacement_coverage": true,
-             "succeeded": true, "applied": true, "refresh_acknowledged": true, "root_revision": 1]
+             "succeeded": true, "applied": true, "refresh_acknowledged": true, "root_revision": 1, "admission": "applied"]
         }
         func noEffect(_ request: [String: Any]) -> [String: Any] {
             ["request_id": request["request_id"]!, "patch_digest": digest, "attempt_id": request["attempt_id"]!,
@@ -148,11 +148,18 @@ struct PreparedEngineTests {
             if key == "baseline_revision" { changed[key] = 1 }
             require(!PreparedDeliveryEngine.inject(changed).success, "pending identity conflict: " + key)
         }
-        for (key, value) in [("coverage_digest", "wrong" as Any), ("attempt_id", "stale"), ("root_revision", 0), ("root_revision", true), ("dynamic_replacements", true), ("succeeded", false), ("succeeded", 1), ("state_uncertain", true), ("complete_replacement_coverage", false), ("objc_callback_proofs", [["verified": true]])] {
+        for (key, value) in [("coverage_digest", "wrong" as Any), ("attempt_id", "stale"), ("root_revision", 0), ("root_revision", true), ("dynamic_replacements", true), ("succeeded", false), ("succeeded", 1), ("state_uncertain", true), ("admission", "uncertain-after-load"), ("complete_replacement_coverage", false), ("objc_callback_proofs", [["verified": true]])] {
             var tampered = success(request); tampered[key] = value
             PreparedDeliveryEngine.record(tampered, from: InjectionServer.client)
             require(query(request)["state"] as? String == "pending", "tampered report rejected: " + key)
         }
+        var missingAdmission = success(request); missingAdmission.removeValue(forKey: "admission")
+        PreparedDeliveryEngine.record(missingAdmission, from: InjectionServer.client)
+        require(query(request)["state"] as? String == "pending", "success without explicit applied admission rejected")
+        var contradictoryAdmission = success(request)
+        contradictoryAdmission["admission"] = "uncertain-after-load"; contradictoryAdmission["state_uncertain"] = false
+        PreparedDeliveryEngine.record(contradictoryAdmission, from: InjectionServer.client)
+        require(query(request)["state"] as? String == "pending", "uncertain admission cannot claim success even with uncertainty flag false")
         for key in ["bundle_id", "build_number", "executable_uuid", "debug_dylib_uuid", "process_nonce"] {
             var changed = identity; changed[key] = "wrong"
             var tampered = success(request); tampered["client_identity"] = changed

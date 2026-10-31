@@ -134,7 +134,7 @@ enum PreparedDeliveryEngine {
                 guard !(applied && refreshed && !succeeded) else { return }
                 if applied && !proof.validatesSuccessfulReport(report) { return }
                 if succeeded {
-                    guard applied, refreshed,
+                    guard applied, refreshed, report["admission"] as? String == "applied",
                           report["state_uncertain"] == nil || PreparedReplacementProof.boolean(report["state_uncertain"]) == false,
                           (PreparedReplacementProof.integer(report["root_revision"] ?? report["revision"]) ?? 0) > receipt.baselineRevision else { return }
                 }

@@ -76,8 +76,10 @@ and the installed toolchain header contract. Runtime Class arrays and `object_ge
 use their raw C pointer ABI: Swift's imported `Any` bridging can send `+class`
 or retain/release messages to runtime-only root classes and crash. Neither
 pointer path sends messages or changes ownership. Inventory limits are 100,000
-classes, 16,384 methods per class/metaclass, 2,000,000 methods total and two
-seconds; exceeding a limit leaves coverage unproven, never fabricates success.
+classes, 16,384 methods per class/metaclass, 2,000,000 methods total and a
+cooperative two-second budget checked between classes. A single class scan
+can extend beyond that budget; it is not a hard real-time deadline. Exceeding
+a checked limit leaves coverage unproven, never fabricates success.
 
 ObjC-only patches are accepted with zero Swift TX only when the exact nonempty
 callback coverage is proven. Mixed patches require both exact counts. Every
@@ -91,6 +93,8 @@ an owner or enqueue a second write. Duplicate pending/completed requests return
 the existing state. Only authenticated explicit pre-admission no-effect proof
 with no uncertainty can reopen a claim for a fresh attempt. Root revision is a
 strict integer and must advance beyond the admitted baseline for success.
+Successful v3 receipts also require explicit `admission: "applied"`; a missing
+or uncertain admission is rejected even if the other success flags are true.
 
 ## Reproducible host checks
 
