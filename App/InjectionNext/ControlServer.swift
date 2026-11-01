@@ -154,6 +154,15 @@ class ControlServer {
         case "status":
             return getStatus()
 
+        case "developer_context":
+            guard AppDelegate.isSwiftSimEngine else { return .fail("DEVELOPER_PRIVATE_ENGINE_REQUIRED") }
+            return developerContext(params)
+
+        case "developer_report":
+            guard AppDelegate.isSwiftSimEngine else { return .fail("DEVELOPER_PRIVATE_ENGINE_REQUIRED") }
+            do { return .ok(try DeveloperReportStore.shared.latest(selector: params, reportID: params["report_id"] as? String)) }
+            catch { return .fail((error as? DeveloperReportStore.Failure)?.rawValue ?? "DEVELOPER_REPORT_UNAVAILABLE") }
+
         case "watch_project":
             guard let path = params["path"] as? String else {
                 return .fail("Missing 'path' parameter")
@@ -501,6 +510,27 @@ class ControlServer {
             "data": screenshot.data.base64EncodedString(),
             "bytes": screenshot.data.count
         ])
+    }
+
+    private func developerContext(_ params: [String: Any]) -> ActionResult {
+        guard ["bundle_id", "executable_uuid", "debug_dylib_uuid"].allSatisfy({
+            guard let value = params[$0] as? String else { return false }; return !value.isEmpty && value.utf8.count <= 256
+        }), params["screenshot"] == nil || params["screenshot"] is Bool else { return .fail("DEVELOPER_REQUEST_INVALID") }
+        guard let (client, metadata) = InjectionServer.developerTarget(params),
+              let identity = metadata["identity"] as? [String: Any] else { return .fail("DEVELOPER_IDENTITY_MISMATCH") }
+        guard let capabilities = metadata["capabilities"] as? [String], capabilities.contains("developer-context-v1") else {
+            return .fail("DEVELOPER_CONTEXT_UNSUPPORTED")
+        }
+        var result: [String: Any] = ["schema_version": 1, "identity": identity, "capabilities": capabilities]
+        if let delivery = PreparedDeliveryEngine.lastDeveloperDelivery(for: identity) { result["last_delivery"] = delivery }
+        if params["screenshot"] as? Bool == true {
+            guard identity["is_active"] as? Bool == true else { return .fail("DEVELOPER_NOT_FOREGROUND") }
+            guard !PreparedDeliveryEngine.hasPending(for: identity) else { return .fail("DEVELOPER_BUSY") }
+            let (image, error) = client.requestDeveloperScreenshot(identity: identity)
+            guard let image else { return .fail(error ?? "DEVELOPER_CAPTURE_UNAVAILABLE") }
+            result["screenshot"] = ["mimeType": "image/jpeg", "bytes": image.count, "data": image.base64EncodedString()]
+        }
+        return .ok(result)
     }
 
     private func getTouchEvents() -> ActionResult {

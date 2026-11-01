@@ -67,6 +67,8 @@ int main() {
         require(InjectionReconnectDelay(6) == 16 && InjectionReconnectDelay(100) == 16, "capped backoff");
         [NSObject performSelectorInBackground:@selector(connectToInjection:) withObject:FixtureSocket.class];
         require(await(^BOOL { return activeReaders == 1; }), "initial connection");
+        require([InjectionDeveloperConnectionState()[@"connected"] boolValue], "developer snapshot observes actual socket owner");
+        require(!InjectionSubmitDeveloperReport(@{@"schema_version": @1, @"report_id": NSUUID.UUID.UUIDString}, NSData.data), "unnegotiated fixture cannot accept report");
         for (int i=0; i<12; i++) {
             [NSObject performSelectorInBackground:@selector(connectToInjection:) withObject:FixtureSocket.class];
         }
@@ -96,6 +98,7 @@ int main() {
         require(peakReaders == 1, "no duplicate command readers");
         InjectionSetExecutionActive(NO);
         require(await(^BOOL { return activeReaders == 0; }), "final owned reader stops");
+        require(![InjectionDeveloperConnectionState()[@"is_active"] boolValue], "developer snapshot tracks foreground execution");
         puts("Native reconnect lifecycle checks passed");
     }
     return 0;

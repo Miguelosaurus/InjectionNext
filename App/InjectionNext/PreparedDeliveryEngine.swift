@@ -21,6 +21,35 @@ enum PreparedDeliveryEngine {
     static let capabilities = ["prepared-delivery-v1", "reconnect-v1", "receipt-v1"]
     static let replacementProofProtocol = 3
 
+    static func hasPending(for identity: [String: Any]) -> Bool {
+        guard let process = identity["process_nonce"] as? String else { return true }
+        return queue.sync { receipts.values.contains { $0.processNonce == process && $0.report == nil } }
+    }
+
+    /// Project only a completed v3 receipt for this exact binary/process.
+    static func lastDeveloperDelivery(for identity: [String: Any]) -> [String: Any]? {
+        guard let process = identity["process_nonce"] as? String,
+              let currentRevision = identity["root_revision"] as? Int else { return nil }
+        return queue.sync {
+            var latest: [String: Any]?
+            for (key, receipt) in receipts where receipt.processNonce == process && receipt.proof != nil {
+                guard receipt.expectedIdentity.allSatisfy({ identity[$0.key] as? String == $0.value }),
+                      let report = receipt.report, report["succeeded"] as? Bool == true,
+                      report["applied"] as? Bool == true, report["refresh_acknowledged"] as? Bool == true,
+                      let revision = report["root_revision"] as? Int,
+                      revision > receipt.baselineRevision, revision <= currentRevision,
+                      revision > (latest?["revision"] as? Int ?? -1) else { continue }
+                let requestID = String(key.dropFirst(process.count + 1))
+                guard UUID(uuidString: requestID) != nil else { continue }
+                latest = ["request_id": requestID, "phase": "refreshed", "revision": revision,
+                    "applied": true, "refresh_acknowledged": true,
+                    "dynamic_replacements": report["dynamic_replacements"] as? Int ?? 0,
+                    "complete_replacement_coverage": report["complete_replacement_coverage"] as? Bool == true]
+            }
+            return latest
+        }
+    }
+
     static func prepare(_ params: [String: Any]) -> ControlServer.ActionResult {
         guard let path = artifact(params["path"] as? String) else { return .fail("PREPARED_ARTIFACT_INVALID") }
         let platform = params["platform"] as? String ?? "iPhoneOS"

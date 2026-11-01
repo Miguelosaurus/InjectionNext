@@ -29,6 +29,9 @@ open class InjectionNext: SimpleSocket {
     private let connectionNonce = UUID().uuidString.lowercased()
     private static let processNonce = UUID().uuidString.lowercased()
     private var preparedDeliveryNegotiated = false // responseQueue only
+    private let developerLock = NSLock()
+    private var developerReady = false
+    private var developerSending = false
     private static let networkRecovery: Void = {
         let monitor = NWPathMonitor()
         let queue = DispatchQueue(label: "SwiftSimNetworkRecovery")
@@ -73,6 +76,107 @@ open class InjectionNext: SimpleSocket {
         guard let data = try? JSONSerialization.data(withJSONObject: report),
               let json = String(data: data, encoding: .utf8) else { return }
         sendResponse(.patchResult, with: json)
+    }
+
+    /// Admission is not a save receipt. The Mac acknowledges only after persistence.
+    @objc(submitDeveloperReport:image:)
+    func submitDeveloperReport(_ metadata: [String: Any], image: Data) -> Bool {
+        guard let id = metadata["report_id"] as? String, UUID(uuidString: id) != nil,
+              metadata["schema_version"] as? Int == 1,
+              image.count <= 1_048_576,
+              image.isEmpty || image.starts(with: [0xff, 0xd8, 0xff]),
+              let encoded = try? JSONSerialization.data(withJSONObject: metadata), encoded.count <= 16_384,
+              !PreparedDeliveryLedger.shared.hasPending else { return false }
+        developerLock.lock()
+        guard developerReady && !developerSending else { developerLock.unlock(); return false }
+        developerSending = true
+        developerLock.unlock()
+        let envelope: [String: Any] = ["metadata": metadata, "identity": clientIdentity()]
+        guard let bytes = try? JSONSerialization.data(withJSONObject: envelope),
+              let json = String(data: bytes, encoding: .utf8) else {
+            developerLock.lock(); developerSending = false; developerLock.unlock(); return false
+        }
+        responseQueue.async {
+            defer { self.developerLock.lock(); self.developerSending = false; self.developerLock.unlock() }
+            guard !PreparedDeliveryLedger.shared.hasPending else {
+                self.developerResult(id: id, saved: false, error: "DEVELOPER_BUSY"); return
+            }
+            guard self.writePrepared(command: InjectionResponse.developerReport.rawValue,
+                metadata: json, data: image, timeout: 0.3) else {
+                self.developerResult(id: id, saved: false, error: "DEVELOPER_REPORT_UNAVAILABLE"); return
+            }
+        }
+        return true
+    }
+
+    private func developerResult(id: String, saved: Bool, error: String? = nil) {
+        var info: [String: Any] = ["report_id": id, "saved": saved]
+        if let error { info["error"] = error }
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: Notification.Name("SWIFT_SIM_DEVELOPER_REPORT_RESULT"), object: nil, userInfo: info)
+        }
+    }
+
+    private func developerScreenshot(_ request: [String: Any]) {
+        guard let captureID = request["capture_id"] as? String, UUID(uuidString: captureID) != nil else { return }
+        let identity = clientIdentity()
+        var result: [String: Any] = ["capture_id": captureID, "identity": identity]
+        var image: Data?
+        let expected = request["expected_identity"] as? [String: Any] ?? [:]
+        guard ["bundle_id", "executable_uuid", "debug_dylib_uuid", "process_nonce", "connection_nonce"].allSatisfy({
+            expected[$0] as? String == identity[$0] as? String && expected[$0] is String
+        }) else {
+            result["error"] = "DEVELOPER_IDENTITY_MISMATCH"
+            sendDeveloperScreenshot(result, image: nil); return
+        }
+        if PreparedDeliveryLedger.shared.hasPending { result["error"] = "DEVELOPER_BUSY" }
+        else if identity["is_active"] as? Bool != true { result["error"] = "DEVELOPER_NOT_FOREGROUND" }
+        else {
+            image = boundedDeveloperScreenshot()
+            if image == nil { result["error"] = "DEVELOPER_CAPTURE_UNAVAILABLE" }
+        }
+        sendDeveloperScreenshot(result, image: image)
+    }
+
+    private func sendDeveloperScreenshot(_ metadata: [String: Any], image: Data?) {
+        guard let bytes = try? JSONSerialization.data(withJSONObject: metadata),
+              let json = String(data: bytes, encoding: .utf8) else { return }
+        responseQueue.async {
+            _ = self.writePrepared(command: InjectionResponse.developerScreenshotData.rawValue,
+                metadata: json, data: image ?? Data(), timeout: 0.3)
+        }
+    }
+
+    /// Capture only an unambiguous foreground scene; no global first-window guess.
+    /// The hierarchy draw is on main, compression runs on the existing reader.
+    private func boundedDeveloperScreenshot() -> Data? {
+        #if canImport(UIKit) && !os(watchOS)
+        var image: UIImage?
+        let capture = {
+            guard UIApplication.shared.applicationState == .active else { return }
+            let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                .filter { $0.activationState == .foregroundActive }
+            guard scenes.count == 1 else { return }
+            let windows = scenes[0].windows.filter { !$0.isHidden && $0.alpha > 0 && $0.windowLevel == .normal }
+            let candidates = windows.filter { $0.isKeyWindow }
+            guard let window = candidates.count == 1 ? candidates.first : (windows.count == 1 ? windows.first : nil),
+                  window.bounds.width > 0, window.bounds.height > 0 else { return }
+            let format = UIGraphicsImageRendererFormat()
+            format.scale = min(window.screen.scale, sqrt(1_950_000 / (window.bounds.width * window.bounds.height)))
+            format.preferredRange = .standard
+            var complete = false
+            let rendered = UIGraphicsImageRenderer(size: window.bounds.size, format: format).image { _ in
+                complete = window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            }
+            if complete { image = rendered }
+        }
+        Thread.isMainThread ? capture() : DispatchQueue.main.sync(execute: capture)
+        guard let image else { return nil }
+        for quality in [CGFloat(0.8), 0.6, 0.4] {
+            if let bytes = image.jpegData(compressionQuality: quality), bytes.count <= 1_048_576 { return bytes }
+        }
+        #endif
+        return nil
     }
 
     private func sendResponse(_ response: InjectionResponse,
@@ -139,7 +243,10 @@ open class InjectionNext: SimpleSocket {
 
     /// Connection from client app opened in ClientBoot.mm arrives here
     open override func runInBackground() {
-        defer { disconnect() }
+        defer {
+            developerLock.lock(); developerReady = false; developerLock.unlock()
+            disconnect()
+        }
         super.write(INJECTION_VERSION)
         #if targetEnvironment(simulator) || os(macOS)
         super.write(NSHomeDirectory())
@@ -524,6 +631,9 @@ open class InjectionNext: SimpleSocket {
                    let notificationName = metricsDict["notification_name"] as? String {
                     if notificationName == "SWIFT_SIM_ENGINE_CAPABILITIES",
                        metricsDict["prepared_delivery_protocol"] as? Int == 1 {
+                        developerLock.lock()
+                        developerReady = metricsDict["developer_context_protocol"] as? Int == 1
+                        developerLock.unlock()
                         sendClientIdentity(negotiate: true)
                         continue
                     }
@@ -555,6 +665,18 @@ open class InjectionNext: SimpleSocket {
                 } else {
                     sendResponse(.screenshotData, with: "", data: Data())
                 }
+            case .developerScreenshot:
+                guard let json = readString(maxLength: 16_384), let bytes = json.data(using: .utf8),
+                      let request = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any] else { return }
+                developerScreenshot(request)
+            case .developerReportResult:
+                guard let json = readString(maxLength: 1_024), let bytes = json.data(using: .utf8),
+                      let result = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any],
+                      let reportID = result["report_id"] as? String, UUID(uuidString: reportID) != nil,
+                      let saved = result["saved"] as? Bool else { return }
+                let code = result["error"] as? String
+                developerResult(id: reportID, saved: saved,
+                    error: code?.hasPrefix("DEVELOPER_") == true ? code : nil)
             case .setenv:
                 while let name = readString(), let value = readString() {
                     setVariable(name: name, to: value, first: false)

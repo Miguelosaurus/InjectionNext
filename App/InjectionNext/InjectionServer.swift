@@ -46,6 +46,13 @@ class InjectionServer: SimpleSocket {
     private var pendingScreenshot: PendingScreenshot?
     private var touchEvents = [String]()
     private var swiftSimMetadata: [String: Any]?
+    private final class PendingDeveloperScreenshot {
+        let id = UUID().uuidString.lowercased()
+        let semaphore = DispatchSemaphore(value: 0)
+        var metadata: [String: Any]?
+        var data: Data?
+    }
+    private var pendingDeveloperScreenshot: PendingDeveloperScreenshot?
 
     func preparedMetadata() -> [String: Any]? { Self.clientQueue.sync { swiftSimMetadata } }
     static func preparedTarget() -> (InjectionServer, [String: Any])? {
@@ -53,6 +60,43 @@ class InjectionServer: SimpleSocket {
             guard let client = connected.last, let metadata = client.swiftSimMetadata else { return nil }
             return (client, metadata)
         }
+    }
+
+    static func developerTarget(_ selector: [String: Any]) -> (InjectionServer, [String: Any])? {
+        clientQueue.sync {
+            let matches = connected.compactMap { client -> (InjectionServer, [String: Any])? in
+                guard let metadata = client.swiftSimMetadata,
+                      let identity = metadata["identity"] as? [String: Any],
+                      DeveloperReportStore.matches(identity, selector: selector) else { return nil }
+                return (client, metadata)
+            }
+            return matches.count == 1 ? matches.first : nil
+        }
+    }
+
+    func requestDeveloperScreenshot(identity: [String: Any]) -> (Data?, String?) {
+        let pending = PendingDeveloperScreenshot()
+        let request: [String: Any] = ["capture_id": pending.id, "expected_identity": identity]
+        guard let encoded = try? JSONSerialization.data(withJSONObject: request),
+              let json = String(data: encoded, encoding: .utf8) else { return (nil, "DEVELOPER_REQUEST_INVALID") }
+        let accepted = Self.clientQueue.sync { () -> Bool in
+            guard pendingDeveloperScreenshot == nil, swiftSimMetadata?["identity"] is [String: Any] else { return false }
+            pendingDeveloperScreenshot = pending
+            guard writeCommand(InjectionCommand.developerScreenshot.rawValue, with: json) else {
+                pendingDeveloperScreenshot = nil; return false
+            }
+            return true
+        }
+        guard accepted else { return (nil, "DEVELOPER_BUSY") }
+        defer { Self.clientQueue.sync { if pendingDeveloperScreenshot === pending { pendingDeveloperScreenshot = nil } } }
+        guard pending.semaphore.wait(timeout: .now() + .seconds(8)) == .success,
+              let metadata = pending.metadata else { return (nil, "DEVELOPER_CAPTURE_TIMEOUT") }
+        if let code = metadata["error"] as? String { return (nil, code) }
+        guard let actual = metadata["identity"] as? [String: Any],
+              ["bundle_id", "executable_uuid", "debug_dylib_uuid", "process_nonce", "connection_nonce", "root_revision"].allSatisfy({
+                String(describing: actual[$0] ?? "") == String(describing: identity[$0] ?? "")
+              }), let image = pending.data, DeveloperReportStore.validJPEG(image) else { return (nil, "DEVELOPER_CAPTURE_CHANGED") }
+        return (image, nil)
     }
 
 
@@ -219,7 +263,7 @@ class InjectionServer: SimpleSocket {
     func processResponses() {
         sendCommand(.xcodePath, with: Defaults.xcodePath)
         if AppDelegate.isSwiftSimEngine {
-            sendCommand(.metrics, with: "{\"notification_name\":\"SWIFT_SIM_ENGINE_CAPABILITIES\",\"prepared_delivery_protocol\":1}")
+            sendCommand(.metrics, with: "{\"notification_name\":\"SWIFT_SIM_ENGINE_CAPABILITIES\",\"prepared_delivery_protocol\":1,\"developer_context_protocol\":1}")
         }
         AppDelegate.restartLastWatcher()
 
@@ -299,6 +343,39 @@ class InjectionServer: SimpleSocket {
                     pendingScreenshot?.data = data
                     pendingScreenshot?.semaphore.signal()
                 }
+            case .developerScreenshotData:
+                guard let json = readString(maxLength: 16_384), let encoded = json.data(using: .utf8),
+                      let metadata = (try? JSONSerialization.jsonObject(with: encoded)) as? [String: Any],
+                      let data = readData(maxLength: 1_048_576) else { return }
+                Self.clientQueue.sync {
+                    guard let pending = pendingDeveloperScreenshot,
+                          metadata["capture_id"] as? String == pending.id else { return }
+                    pending.metadata = metadata; pending.data = data; pending.semaphore.signal()
+                }
+            case .developerReport:
+                guard let json = readString(maxLength: 32_768), let encoded = json.data(using: .utf8),
+                      let envelope = (try? JSONSerialization.jsonObject(with: encoded)) as? [String: Any],
+                      let metadata = envelope["metadata"] as? [String: Any],
+                      let capturedIdentity = envelope["identity"] as? [String: Any],
+                      let image = readData(maxLength: 1_048_576),
+                      let reportID = metadata["report_id"] as? String, UUID(uuidString: reportID) != nil else { return }
+                let observed = preparedMetadata()?["identity"] as? [String: Any] ?? [:]
+                guard AppDelegate.isSwiftSimEngine,
+                      ["bundle_id", "executable_uuid", "debug_dylib_uuid", "process_nonce", "connection_nonce"].allSatisfy({
+                          capturedIdentity[$0] is String && capturedIdentity[$0] as? String == observed[$0] as? String
+                      }) else { developerReportResult(id: reportID, saved: false, error: "DEVELOPER_IDENTITY_MISMATCH"); continue }
+                guard !PreparedDeliveryEngine.hasPending(for: observed) else {
+                    developerReportResult(id: reportID, saved: false, error: "DEVELOPER_BUSY"); continue
+                }
+                DispatchQueue.global(qos: .utility).async {
+                    do {
+                        try DeveloperReportStore.shared.save(metadata: metadata, image: image, identity: capturedIdentity)
+                        self.developerReportResult(id: reportID, saved: true)
+                    } catch {
+                        self.developerReportResult(id: reportID, saved: false,
+                            error: (error as? DeveloperReportStore.Failure)?.rawValue ?? "DEVELOPER_REPORT_UNAVAILABLE")
+                    }
+                }
             case .touchEvent:
                 if let json = readString() {
                     Self.clientQueue.sync {
@@ -372,5 +449,13 @@ class InjectionServer: SimpleSocket {
                 return
             }
         }
+    }
+
+    private func developerReportResult(id: String, saved: Bool, error: String? = nil) {
+        var result: [String: Any] = ["report_id": id, "saved": saved]
+        if let error { result["error"] = error }
+        guard let bytes = try? JSONSerialization.data(withJSONObject: result),
+              let json = String(data: bytes, encoding: .utf8) else { return }
+        sendCommand(.developerReportResult, with: json)
     }
 }

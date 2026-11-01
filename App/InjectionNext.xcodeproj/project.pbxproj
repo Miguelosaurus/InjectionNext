@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        DECA00012F11000000000001 /* DeveloperReportStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = DECA00022F11000000000001 /* DeveloperReportStore.swift */; };
         CAFE00312F08000000000001 /* PreparedReplacementProof.swift in Client Sources */ = {isa = PBXBuildFile; fileRef = CAFE00302F08000000000001 /* PreparedReplacementProof.swift */; };
         CAFE00322F08000000000001 /* PreparedReplacementProof.swift in Engine Sources */ = {isa = PBXBuildFile; fileRef = CAFE00302F08000000000001 /* PreparedReplacementProof.swift */; };
         CAFE00112F08000000000001 /* CompilationRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = CAFE00102F08000000000001 /* CompilationRegistration.swift */; };
@@ -178,6 +179,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+        DECA00022F11000000000001 /* DeveloperReportStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeveloperReportStore.swift; sourceTree = "<group>"; };
         CAFE00302F08000000000001 /* PreparedReplacementProof.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PreparedReplacementProof.swift; path = ../../Sources/InjectionNext/PreparedReplacementProof.swift; sourceTree = "<group>"; };
         CAFE00102F08000000000001 /* CompilationRegistration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompilationRegistration.swift; sourceTree = "<group>"; };
         CAFE00002F08000000000001 /* PreparedDelivery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PreparedDelivery.swift; path = ../../Sources/InjectionNext/PreparedDelivery.swift; sourceTree = "<group>"; };
@@ -580,6 +582,7 @@
 				BB6A56EF2C50E73600C92112 /* ConfigStore.swift */,
 				22B6459F2C18DD9D00F99B61 /* Unhider.swift */,
 				AA0000002F08000000000001 /* ControlServer.swift */,
+                DECA00022F11000000000001 /* DeveloperReportStore.swift */,
                 CAFE00102F08000000000001 /* CompilationRegistration.swift */,
 				CAFE00022F08000000000001 /* PreparedDeliveryEngine.swift */,
 				AAAA000000000000000000E1 /* LogManager.swift */,
@@ -884,6 +887,7 @@
 				224E57FE2C08BBE300B71C79 /* InjectionServer.swift in Sources */,
 				22B645A02C18DD9D00F99B61 /* Unhider.swift in Sources */,
 				AA0000012F08000000000001 /* ControlServer.swift in Sources */,
+                DECA00012F11000000000001 /* DeveloperReportStore.swift in Sources */,
                 CAFE00112F08000000000001 /* CompilationRegistration.swift in Sources */,
 				CAFE00032F08000000000001 /* PreparedDeliveryEngine.swift in Sources */,
                 CAFE00322F08000000000001 /* PreparedReplacementProof.swift in Engine Sources */,

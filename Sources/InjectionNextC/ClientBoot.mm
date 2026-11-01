@@ -20,6 +20,7 @@ const char *_insetting(NSString *name);
 }
 
 @interface InjectionNext : SimpleSocket
+- (BOOL)submitDeveloperReport:(NSDictionary *)metadata image:(NSData *)image;
 @end
 
 @implementation NSObject(InjectionNext)
@@ -31,6 +32,7 @@ static BOOL executionActive = YES;
 static NSUInteger reconnectWakeGeneration;
 static BOOL rootReady;
 static NSUInteger rootRevision;
+static void developerConnectionChanged(void);
 
 static NSCondition *reconnectState(void) {
     static dispatch_once_t once;
@@ -63,6 +65,7 @@ extern "C" void InjectionSetExecutionActive(BOOL active) {
     [condition broadcast];
     [condition unlock];
     [[NSNotificationCenter defaultCenter] postNotificationName:@"SWIFT_SIM_CLIENT_STATE_CHANGED" object:nil];
+    developerConnectionChanged();
     [client disconnect];
 }
 
@@ -74,6 +77,7 @@ extern "C" void InjectionSetRootReady(BOOL ready, NSUInteger revision) {
     [condition broadcast];
     [condition unlock];
     [[NSNotificationCenter defaultCenter] postNotificationName:@"SWIFT_SIM_CLIENT_STATE_CHANGED" object:nil];
+    developerConnectionChanged();
 }
 
 extern "C" BOOL InjectionWaitForRootReady(NSTimeInterval expiresAt) {
@@ -94,6 +98,29 @@ extern "C" NSDictionary *InjectionClientExecutionState(void) {
     NSDictionary *state = @{ @"is_active": @(executionActive), @"root_ready": @(rootReady), @"root_revision": @(rootRevision) };
     [condition unlock];
     return state;
+}
+
+extern "C" NSDictionary *InjectionDeveloperConnectionState(void) {
+    NSCondition *condition = reconnectState();
+    [condition lock];
+    NSDictionary *state = @{ @"connected": @(injectionClient != nil),
+        @"is_active": @(executionActive), @"root_ready": @(rootReady), @"root_revision": @(rootRevision) };
+    [condition unlock];
+    return state;
+}
+
+extern "C" BOOL InjectionSubmitDeveloperReport(NSDictionary *metadata, NSData *image) {
+    NSCondition *condition = reconnectState();
+    [condition lock];
+    InjectionNext *client = executionActive ? (InjectionNext *)injectionClient : nil;
+    [condition unlock];
+    return [client respondsToSelector:@selector(submitDeveloperReport:image:)] &&
+        [client submitDeveloperReport:metadata image:image];
+}
+
+static void developerConnectionChanged(void) {
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"SWIFT_SIM_DEVELOPER_CONNECTION_CHANGED"
+        object:nil userInfo:InjectionDeveloperConnectionState()];
 }
 
 extern "C" NSString *InjectionImageUUID(BOOL debugDylib) {
@@ -200,13 +227,16 @@ extern "C" NSString *InjectionImageUUID(BOOL debugDylib) {
                 if (current) injectionClient = client;
                 [condition unlock];
                 if (current) {
+                    developerConnectionChanged();
                     failures = 0;
                     [client runInBackground];
                 }
                 [client disconnect];
                 [condition lock];
-                if (injectionClient == client) injectionClient = nil;
+                BOOL removed = injectionClient == client;
+                if (removed) injectionClient = nil;
                 [condition unlock];
+                if (removed) developerConnectionChanged();
             }
             if (!reconnectEnabled) break;
             [condition lock];

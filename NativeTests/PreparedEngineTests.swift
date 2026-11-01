@@ -168,6 +168,13 @@ struct PreparedEngineTests {
         }
         PreparedDeliveryEngine.record(success(request), from: InjectionServer.client)
         require(query(request)["state"] as? String == "completed", "exact v3 proof completes")
+        var developerIdentity = identity; developerIdentity["root_revision"] = 1
+        require(PreparedDeliveryEngine.lastDeveloperDelivery(for: identity) == nil, "developer context cannot borrow a newer revision than observed")
+        let developerReceipt = PreparedDeliveryEngine.lastDeveloperDelivery(for: developerIdentity)
+        require(developerReceipt?["request_id"] as? String == request["request_id"] as? String,
+            "developer context projects exact verified v3 receipt")
+        developerIdentity["process_nonce"] = "different-process"
+        require(PreparedDeliveryEngine.lastDeveloperDelivery(for: developerIdentity) == nil, "developer receipt never crosses process generations")
         var changed = request; changed["replacement_proof"] = ["version": 3, "swift_replacements": 2, "objc_callbacks": []]
         require(!PreparedDeliveryEngine.inject(changed).success, "cached success cannot hide changed expectations")
         require(PreparedDeliveryEngine.inject(request).data?["state"] as? String == "completed", "exact cached v3 returns proof")

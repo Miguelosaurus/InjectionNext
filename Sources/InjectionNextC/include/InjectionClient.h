@@ -20,6 +20,8 @@ NSTimeInterval InjectionReconnectDelay(NSUInteger failureCount);
 void InjectionSetRootReady(BOOL ready, NSUInteger revision);
 BOOL InjectionWaitForRootReady(NSTimeInterval expiresAt);
 NSDictionary * _Nonnull InjectionClientExecutionState(void);
+NSDictionary * _Nonnull InjectionDeveloperConnectionState(void);
+BOOL InjectionSubmitDeveloperReport(NSDictionary * _Nonnull metadata, NSData * _Nonnull image);
 NSString * _Nonnull InjectionImageUUID(BOOL debugDylib);
 #ifdef __cplusplus
 }
@@ -60,6 +62,8 @@ typedef NS_ENUM(int, InjectionCommand) {
     InjectionReplayEvents,
     InjectionCaptureEvents,
     InjectionPreparedInject,
+    InjectionDeveloperScreenshot,
+    InjectionDeveloperReportResult,
 
     InjectionInvalid = 1000,
 
@@ -82,6 +86,8 @@ typedef NS_ENUM(int, InjectionResponse) {
     InjectionReplayComplete,
     InjectionPatchResult,
     InjectionSwiftSimClient,
+    InjectionDeveloperScreenshotData,
+    InjectionDeveloperReport,
 
     InjectionExit = ~0
 };
