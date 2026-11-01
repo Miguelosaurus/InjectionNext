@@ -7,6 +7,7 @@ struct DeveloperToolTests {
     }
     static func main() {
         captureTests()
+        queuedToolTests()
         var now: TimeInterval = 100
         let ledger = DeveloperToolLedger(clock: { now })
         var results: [[String: Any]] = []
@@ -43,6 +44,24 @@ struct DeveloperToolTests {
         require(accepted == 1, "32 racing identical requests admit one UI mutation")
         require(concurrent.complete(id: "same", result: ["success": true]), "racing owner completes once")
         print("Developer tool at-most-once, stale reply, uncertainty and concurrency checks passed")
+    }
+
+    static func queuedToolTests() {
+        var now: TimeInterval = 10
+        let ledger = DeveloperToolLedger(clock: { now })
+        var lastResult: [String: Any] = [:]
+        require(ledger.begin(id: "queued", tool: "refresh", value: nil, reply: { lastResult = $0 }), "queued action admitted")
+        now += 11
+        var effects = 0
+        if ledger.claim(id: "queued", tool: "refresh", value: nil) != nil { effects += 1 }
+        require(effects == 0, "blocked-main queued action emits no UI event after expiry")
+        require(lastResult["error"] as? String == "DEVELOPER_TOOL_UNCONFIRMED", "expired queued action reports uncertainty without effect")
+        require(ledger.begin(id: "fresh", tool: "appearance", value: "dark", reply: { _ in }), "fresh UI request admitted")
+        require(ledger.claim(id: "fresh", tool: "appearance", value: "dark") != nil, "timely action claims main dispatch once")
+        require(ledger.claim(id: "fresh", tool: "appearance", value: "dark") == nil, "already dispatched action cannot emit twice")
+        require(ledger.complete(id: "fresh", result: ["success": true]), "claimed action completes")
+        require(ledger.claim(id: "fresh", tool: "appearance", value: "dark") == nil, "completed action cannot emit another event")
+        print("Queued developer tool deadline and one-dispatch checks passed")
     }
 
     static func captureTests() {

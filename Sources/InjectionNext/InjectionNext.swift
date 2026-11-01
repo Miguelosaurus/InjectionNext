@@ -122,6 +122,8 @@ open class InjectionNext: SimpleSocket {
         DeveloperToolLedger.shared.complete(id: operationID.lowercased(), result: result)
     }
 
+    @objc var developerConnectionNonce: String { connectionNonce }
+
     private func developerTool(_ request: [String: Any]) {
         guard let id = request["operation_id"] as? String, UUID(uuidString: id) != nil,
               let tool = request["tool"] as? String, ["appearance", "refresh"].contains(tool),
@@ -134,18 +136,41 @@ open class InjectionNext: SimpleSocket {
             self.sendResponse(.developerToolResult, with: json)
         }
         let expected = request["expected_identity"] as? [String: Any] ?? [:]
-        guard ["bundle_id", "executable_uuid", "debug_dylib_uuid", "process_nonce", "connection_nonce"].allSatisfy({
-            expected[$0] is String && expected[$0] as? String == identity[$0] as? String
-        }) else { reply(["success": false, "error": "DEVELOPER_IDENTITY_MISMATCH"]); return }
+        guard Self.sameCaptureIdentity(expected, identity) else { reply(["success": false, "error": "DEVELOPER_IDENTITY_MISMATCH"]); return }
         guard identity["is_active"] as? Bool == true, identity["root_ready"] as? Bool == true else {
             reply(["success": false, "error": "DEVELOPER_NOT_FOREGROUND"]); return
         }
         guard !PreparedDeliveryLedger.shared.hasPending else { reply(["success": false, "error": "DEVELOPER_BUSY"]); return }
         guard DeveloperToolLedger.shared.begin(id: operationID, tool: tool, value: request["value"] as? String, reply: reply) else { return }
-        var info: [String: Any] = ["operation_id": operationID, "tool": tool]
-        if let value = request["value"] as? String { info["value"] = value }
         DispatchQueue.main.async {
+            guard let expiry = DeveloperToolLedger.shared.claim(id: operationID, tool: tool, value: request["value"] as? String) else { return }
+            func reject(_ code: String) {
+                _ = DeveloperToolLedger.shared.complete(id: operationID, result: ["success": false, "error": code])
+            }
+            guard InjectionDeveloperConnectionIsCurrent(self),
+                  Self.sameCaptureIdentity(identity, self.clientIdentity()) else { reject("DEVELOPER_IDENTITY_MISMATCH"); return }
+            guard self.clientIdentity()["root_ready"] as? Bool == true else { reject("DEVELOPER_NOT_FOREGROUND"); return }
+            guard !PreparedDeliveryLedger.shared.hasPending else { reject("DEVELOPER_BUSY"); return }
+            #if canImport(UIKit) && !os(watchOS)
+            guard UIApplication.shared.applicationState == .active else { reject("DEVELOPER_NOT_FOREGROUND"); return }
+            let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                .filter { $0.activationState == .foregroundActive }
+            guard scenes.count == 1 else { reject("DEVELOPER_SCENE_AMBIGUOUS"); return }
+            let keyWindows = scenes[0].windows.filter { $0.isKeyWindow && !$0.isHidden && $0.alpha > 0 && $0.windowLevel == .normal }
+            guard keyWindows.count == 1 else { reject("DEVELOPER_SCENE_AMBIGUOUS"); return }
+            var info: [String: Any] = ["operation_id": operationID, "tool": tool,
+                "target_scene": scenes[0].session.persistentIdentifier,
+                "expected_revision": identity["root_revision"] ?? 0,
+                "expected_connection_nonce": self.connectionNonce, "expires_at_uptime": expiry]
+            if let value = request["value"] as? String { info["value"] = value }
+            guard ProcessInfo.processInfo.systemUptime <= expiry,
+                  InjectionDeveloperConnectionIsCurrent(self),
+                  Self.sameCaptureIdentity(identity, self.clientIdentity()),
+                  !PreparedDeliveryLedger.shared.hasPending else { reject("DEVELOPER_TOOL_UNCONFIRMED"); return }
             NotificationCenter.default.post(name: Notification.Name("SWIFT_SIM_DEVELOPER_TOOL_REQUEST"), object: nil, userInfo: info)
+            #else
+            reject("DEVELOPER_TOOL_UNSUPPORTED")
+            #endif
         }
     }
 

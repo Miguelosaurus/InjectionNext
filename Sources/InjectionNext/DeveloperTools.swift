@@ -71,6 +71,7 @@ final class DeveloperToolLedger {
         let expiry: TimeInterval
         var result: [String: Any]?
         var reply: (([String: Any]) -> Void)?
+        var dispatched = false
     }
     private let lock = NSLock()
     private var entries: [String: Entry] = [:]
@@ -127,6 +128,22 @@ final class DeveloperToolLedger {
         lock.unlock()
         reply?(result)
         return true
+    }
+
+    /// Called on main immediately before emitting the UI request. A queued
+    /// block cannot acquire an expired, already completed, or dispatched action.
+    func claim(id: String, tool: String, value: String?) -> TimeInterval? {
+        lock.lock()
+        guard var entry = entries[id], entry.tool == tool, entry.value == value,
+              entry.result == nil, !entry.dispatched else { lock.unlock(); return nil }
+        guard clock() <= entry.expiry else {
+            let result: [String: Any] = ["success": false, "error": "DEVELOPER_TOOL_UNCONFIRMED"]
+            let reply = entry.reply
+            entry.result = result; entry.reply = nil; entries[id] = entry
+            lock.unlock(); reply?(result); return nil
+        }
+        entry.dispatched = true; entries[id] = entry
+        lock.unlock(); return entry.expiry
     }
 }
 #endif

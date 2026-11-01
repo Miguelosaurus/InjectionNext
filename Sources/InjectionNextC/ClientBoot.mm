@@ -22,6 +22,7 @@ const char *_insetting(NSString *name);
 @interface InjectionNext : SimpleSocket
 - (BOOL)submitDeveloperReport:(NSDictionary *)metadata image:(NSData *)image;
 - (BOOL)completeDeveloperTool:(NSString *)operationID result:(NSDictionary *)result;
+- (NSString *)developerConnectionNonce;
 @end
 
 @implementation NSObject(InjectionNext)
@@ -104,10 +105,22 @@ extern "C" NSDictionary *InjectionClientExecutionState(void) {
 extern "C" NSDictionary *InjectionDeveloperConnectionState(void) {
     NSCondition *condition = reconnectState();
     [condition lock];
-    NSDictionary *state = @{ @"connected": @(injectionClient != nil),
-        @"is_active": @(executionActive), @"root_ready": @(rootReady), @"root_revision": @(rootRevision) };
+    NSMutableDictionary *state = [@{ @"connected": @(injectionClient != nil),
+        @"is_active": @(executionActive), @"root_ready": @(rootReady), @"root_revision": @(rootRevision) } mutableCopy];
+    InjectionNext *client = (InjectionNext *)injectionClient;
+    if ([client respondsToSelector:@selector(developerConnectionNonce)]) {
+        state[@"connection_nonce"] = [client developerConnectionNonce];
+    }
     [condition unlock];
     return state;
+}
+
+extern "C" BOOL InjectionDeveloperConnectionIsCurrent(NSObject *client) {
+    NSCondition *condition = reconnectState();
+    [condition lock];
+    BOOL current = injectionClient == client && executionActive;
+    [condition unlock];
+    return current;
 }
 
 extern "C" BOOL InjectionSubmitDeveloperReport(NSDictionary *metadata, NSData *image) {

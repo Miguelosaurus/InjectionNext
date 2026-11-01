@@ -17,6 +17,7 @@ extern "C" const char *_insetting(NSString *name) {
 static NSCondition *state;
 static int attempts, activeReaders, peakReaders;
 static BOOL offline;
+static SimpleSocket *latestClient;
 @interface FixtureSocket: SimpleSocket
 @property BOOL disconnected;
 @end
@@ -27,7 +28,9 @@ static BOOL offline;
     BOOL unavailable = offline;
     [state broadcast];
     [state unlock];
-    return unavailable ? nil : [FixtureSocket new];
+    FixtureSocket *client = unavailable ? nil : [FixtureSocket new];
+    if (client) latestClient = client;
+    return client;
 }
 - (void)runInBackground {
     [state lock];
@@ -68,6 +71,8 @@ int main() {
         [NSObject performSelectorInBackground:@selector(connectToInjection:) withObject:FixtureSocket.class];
         require(await(^BOOL { return activeReaders == 1; }), "initial connection");
         require([InjectionDeveloperConnectionState()[@"connected"] boolValue], "developer snapshot observes actual socket owner");
+        SimpleSocket *firstClient = latestClient;
+        require(InjectionDeveloperConnectionIsCurrent(firstClient), "developer dispatch recognizes exact active socket owner");
         require(!InjectionSubmitDeveloperReport(@{@"schema_version": @1, @"report_id": NSUUID.UUID.UUIDString}, NSData.data), "unnegotiated fixture cannot accept report");
         for (int i=0; i<12; i++) {
             [NSObject performSelectorInBackground:@selector(connectToInjection:) withObject:FixtureSocket.class];
@@ -76,6 +81,8 @@ int main() {
         require(peakReaders == 1 && attempts == 1, "one client despite concurrent starts");
         InjectionWakeConnection();
         require(await(^BOOL { return attempts >= 2 && activeReaders == 1; }), "network/helper disconnect reconnects");
+        require(!InjectionDeveloperConnectionIsCurrent(firstClient), "queued old-client developer action is rejected after reconnect");
+        require(InjectionDeveloperConnectionIsCurrent(latestClient), "new socket remains current after reconnect");
         InjectionSetExecutionActive(NO);
         require(await(^BOOL { return activeReaders == 0; }), "background reader closes");
         int paused = attempts;

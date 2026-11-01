@@ -21,6 +21,7 @@ void InjectionSetRootReady(BOOL ready, NSUInteger revision);
 BOOL InjectionWaitForRootReady(NSTimeInterval expiresAt);
 NSDictionary * _Nonnull InjectionClientExecutionState(void);
 NSDictionary * _Nonnull InjectionDeveloperConnectionState(void);
+BOOL InjectionDeveloperConnectionIsCurrent(NSObject * _Nonnull client);
 BOOL InjectionSubmitDeveloperReport(NSDictionary * _Nonnull metadata, NSData * _Nonnull image);
 BOOL InjectionCompleteDeveloperTool(NSString * _Nonnull operationID, NSDictionary * _Nonnull result);
 NSString * _Nonnull InjectionImageUUID(BOOL debugDylib);
