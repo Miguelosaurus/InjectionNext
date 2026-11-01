@@ -163,6 +163,10 @@ class ControlServer {
             do { return .ok(try DeveloperReportStore.shared.latest(selector: params, reportID: params["report_id"] as? String)) }
             catch { return .fail((error as? DeveloperReportStore.Failure)?.rawValue ?? "DEVELOPER_REPORT_UNAVAILABLE") }
 
+        case "developer_tool":
+            guard AppDelegate.isSwiftSimEngine else { return .fail("DEVELOPER_PRIVATE_ENGINE_REQUIRED") }
+            return developerTool(params)
+
         case "watch_project":
             guard let path = params["path"] as? String else {
                 return .fail("Missing 'path' parameter")
@@ -531,6 +535,32 @@ class ControlServer {
             result["screenshot"] = ["mimeType": "image/jpeg", "bytes": image.count, "data": image.base64EncodedString()]
         }
         return .ok(result)
+    }
+
+    private func developerTool(_ params: [String: Any]) -> ActionResult {
+        guard let operationID = params["operation_id"] as? String, UUID(uuidString: operationID) != nil,
+              let tool = params["tool"] as? String, ["appearance", "refresh"].contains(tool),
+              tool != "appearance" || ["app-default", "light", "dark"].contains(params["value"] as? String ?? ""),
+              ["bundle_id", "executable_uuid", "debug_dylib_uuid", "process_nonce", "connection_nonce"].allSatisfy({
+                  guard let value = params[$0] as? String else { return false }; return !value.isEmpty && value.utf8.count <= 256
+              }) else { return .fail("DEVELOPER_REQUEST_INVALID") }
+        guard let (client, metadata) = InjectionServer.developerTarget(params),
+              let identity = metadata["identity"] as? [String: Any],
+              ["process_nonce", "connection_nonce"].allSatisfy({ params[$0] as? String == identity[$0] as? String }) else {
+            return .fail("DEVELOPER_IDENTITY_MISMATCH")
+        }
+        guard let capabilities = metadata["capabilities"] as? [String], capabilities.contains("developer-context-v1") else {
+            return .fail("DEVELOPER_CONTEXT_UNSUPPORTED")
+        }
+        guard identity["is_active"] as? Bool == true, identity["root_ready"] as? Bool == true else {
+            return .fail("DEVELOPER_NOT_FOREGROUND")
+        }
+        guard !PreparedDeliveryEngine.hasPending(for: identity) else { return .fail("DEVELOPER_BUSY") }
+        var request: [String: Any] = ["operation_id": operationID.lowercased(), "tool": tool]
+        if tool == "appearance" { request["value"] = params["value"] }
+        let (result, error) = client.requestDeveloperTool(request, identity: identity)
+        guard let result else { return .fail(error ?? "DEVELOPER_TOOL_UNCONFIRMED") }
+        return .ok(["schema_version": 1, "identity": identity, "operation_id": operationID.lowercased(), "result": result])
     }
 
     private func getTouchEvents() -> ActionResult {

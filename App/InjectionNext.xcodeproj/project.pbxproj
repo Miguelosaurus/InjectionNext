@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        DECA00032F11000000000001 /* DeveloperTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = DECA00042F11000000000001 /* DeveloperTools.swift */; };
         DECA00012F11000000000001 /* DeveloperReportStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = DECA00022F11000000000001 /* DeveloperReportStore.swift */; };
         CAFE00312F08000000000001 /* PreparedReplacementProof.swift in Client Sources */ = {isa = PBXBuildFile; fileRef = CAFE00302F08000000000001 /* PreparedReplacementProof.swift */; };
         CAFE00322F08000000000001 /* PreparedReplacementProof.swift in Engine Sources */ = {isa = PBXBuildFile; fileRef = CAFE00302F08000000000001 /* PreparedReplacementProof.swift */; };
@@ -179,6 +180,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+        DECA00042F11000000000001 /* DeveloperTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DeveloperTools.swift; path = ../../Sources/InjectionNext/DeveloperTools.swift; sourceTree = "<group>"; };
         DECA00022F11000000000001 /* DeveloperReportStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeveloperReportStore.swift; sourceTree = "<group>"; };
         CAFE00302F08000000000001 /* PreparedReplacementProof.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PreparedReplacementProof.swift; path = ../../Sources/InjectionNext/PreparedReplacementProof.swift; sourceTree = "<group>"; };
         CAFE00102F08000000000001 /* CompilationRegistration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompilationRegistration.swift; sourceTree = "<group>"; };
@@ -610,7 +612,8 @@
 				BBDD84592C4FF645000F3124 /* ClientBoot.mm */,
 				BBDD843A2C4FE892000F3124 /* InjectionBoot.mm */,
 				BBDD84182C4FE7E6000F3124 /* InjectionNext.swift */,
-				CAFE00002F08000000000001 /* PreparedDelivery.swift */,
+				DECA00042F11000000000001 /* DeveloperTools.swift */,
+                CAFE00002F08000000000001 /* PreparedDelivery.swift */,
                 CAFE00302F08000000000001 /* PreparedReplacementProof.swift */,
 				BBDD84532C4FEB16000F3124 /* TupleRegex.swift */,
 				BB42F9452EB63E3400FDBBCC /* InjectionLite */,
@@ -899,7 +902,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				BBDD84422C4FEA4E000F3124 /* InjectionNext.swift in Sources */,
-				CAFE00012F08000000000001 /* PreparedDelivery.swift in Sources */,
+				DECA00032F11000000000001 /* DeveloperTools.swift in Sources */,
+                CAFE00012F08000000000001 /* PreparedDelivery.swift in Sources */,
                 CAFE00312F08000000000001 /* PreparedReplacementProof.swift in Client Sources */,
 				BB42F8E12EB626F100FDBBCC /* SwiftAspects.swift in Sources */,
 				BB42F8E22EB626F100FDBBCC /* SwiftInterpose.swift in Sources */,

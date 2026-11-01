@@ -117,6 +117,38 @@ open class InjectionNext: SimpleSocket {
         }
     }
 
+    @objc(completeDeveloperTool:result:)
+    func completeDeveloperTool(_ operationID: String, result: [String: Any]) -> Bool {
+        DeveloperToolLedger.shared.complete(id: operationID.lowercased(), result: result)
+    }
+
+    private func developerTool(_ request: [String: Any]) {
+        guard let id = request["operation_id"] as? String, UUID(uuidString: id) != nil,
+              let tool = request["tool"] as? String, ["appearance", "refresh"].contains(tool),
+              tool != "appearance" || ["app-default", "light", "dark"].contains(request["value"] as? String ?? "") else { return }
+        let operationID = id.lowercased()
+        let identity = clientIdentity()
+        let reply: ([String: Any]) -> Void = { result in
+            let payload: [String: Any] = ["operation_id": operationID, "identity": identity, "result": result]
+            guard let bytes = try? JSONSerialization.data(withJSONObject: payload), let json = String(data: bytes, encoding: .utf8) else { return }
+            self.sendResponse(.developerToolResult, with: json)
+        }
+        let expected = request["expected_identity"] as? [String: Any] ?? [:]
+        guard ["bundle_id", "executable_uuid", "debug_dylib_uuid", "process_nonce", "connection_nonce"].allSatisfy({
+            expected[$0] is String && expected[$0] as? String == identity[$0] as? String
+        }) else { reply(["success": false, "error": "DEVELOPER_IDENTITY_MISMATCH"]); return }
+        guard identity["is_active"] as? Bool == true, identity["root_ready"] as? Bool == true else {
+            reply(["success": false, "error": "DEVELOPER_NOT_FOREGROUND"]); return
+        }
+        guard !PreparedDeliveryLedger.shared.hasPending else { reply(["success": false, "error": "DEVELOPER_BUSY"]); return }
+        guard DeveloperToolLedger.shared.begin(id: operationID, tool: tool, value: request["value"] as? String, reply: reply) else { return }
+        var info: [String: Any] = ["operation_id": operationID, "tool": tool]
+        if let value = request["value"] as? String { info["value"] = value }
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: Notification.Name("SWIFT_SIM_DEVELOPER_TOOL_REQUEST"), object: nil, userInfo: info)
+        }
+    }
+
     private func developerScreenshot(_ request: [String: Any]) {
         guard let captureID = request["capture_id"] as? String, UUID(uuidString: captureID) != nil else { return }
         let identity = clientIdentity()
@@ -677,6 +709,10 @@ open class InjectionNext: SimpleSocket {
                 let code = result["error"] as? String
                 developerResult(id: reportID, saved: saved,
                     error: code?.hasPrefix("DEVELOPER_") == true ? code : nil)
+            case .developerTool:
+                guard let json = readString(maxLength: 16_384), let bytes = json.data(using: .utf8),
+                      let request = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any] else { return }
+                developerTool(request)
             case .setenv:
                 while let name = readString(), let value = readString() {
                     setVariable(name: name, to: value, first: false)

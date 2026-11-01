@@ -21,6 +21,7 @@ const char *_insetting(NSString *name);
 
 @interface InjectionNext : SimpleSocket
 - (BOOL)submitDeveloperReport:(NSDictionary *)metadata image:(NSData *)image;
+- (BOOL)completeDeveloperTool:(NSString *)operationID result:(NSDictionary *)result;
 @end
 
 @implementation NSObject(InjectionNext)
@@ -116,6 +117,15 @@ extern "C" BOOL InjectionSubmitDeveloperReport(NSDictionary *metadata, NSData *i
     [condition unlock];
     return [client respondsToSelector:@selector(submitDeveloperReport:image:)] &&
         [client submitDeveloperReport:metadata image:image];
+}
+
+extern "C" BOOL InjectionCompleteDeveloperTool(NSString *operationID, NSDictionary *result) {
+    NSCondition *condition = reconnectState();
+    [condition lock];
+    InjectionNext *client = (InjectionNext *)injectionClient;
+    [condition unlock];
+    return [client respondsToSelector:@selector(completeDeveloperTool:result:)] &&
+        [client completeDeveloperTool:operationID result:result];
 }
 
 static void developerConnectionChanged(void) {

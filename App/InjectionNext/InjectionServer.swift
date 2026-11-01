@@ -53,6 +53,13 @@ class InjectionServer: SimpleSocket {
         var data: Data?
     }
     private var pendingDeveloperScreenshot: PendingDeveloperScreenshot?
+    private final class PendingDeveloperTool {
+        let id: String
+        let semaphore = DispatchSemaphore(value: 0)
+        var payload: [String: Any]?
+        init(id: String) { self.id = id }
+    }
+    private var pendingDeveloperTool: PendingDeveloperTool?
 
     func preparedMetadata() -> [String: Any]? { Self.clientQueue.sync { swiftSimMetadata } }
     static func preparedTarget() -> (InjectionServer, [String: Any])? {
@@ -97,6 +104,38 @@ class InjectionServer: SimpleSocket {
                 String(describing: actual[$0] ?? "") == String(describing: identity[$0] ?? "")
               }), let image = pending.data, DeveloperReportStore.validJPEG(image) else { return (nil, "DEVELOPER_CAPTURE_CHANGED") }
         return (image, nil)
+    }
+
+    func requestDeveloperTool(_ request: [String: Any], identity: [String: Any]) -> ([String: Any]?, String?) {
+        guard let id = request["operation_id"] as? String else { return (nil, "DEVELOPER_REQUEST_INVALID") }
+        let pending = PendingDeveloperTool(id: id.lowercased())
+        var envelope = request
+        envelope["expected_identity"] = identity
+        envelope["operation_id"] = pending.id
+        guard let bytes = try? JSONSerialization.data(withJSONObject: envelope),
+              let json = String(data: bytes, encoding: .utf8) else { return (nil, "DEVELOPER_REQUEST_INVALID") }
+        let accepted = Self.clientQueue.sync { () -> Bool in
+            guard pendingDeveloperTool == nil, pendingDeveloperScreenshot == nil,
+                  let current = swiftSimMetadata?["identity"] as? [String: Any],
+                  ["bundle_id", "executable_uuid", "debug_dylib_uuid", "process_nonce", "connection_nonce"].allSatisfy({
+                      current[$0] is String && current[$0] as? String == identity[$0] as? String
+                  }) else { return false }
+            pendingDeveloperTool = pending
+            guard writeCommand(InjectionCommand.developerTool.rawValue, with: json) else {
+                pendingDeveloperTool = nil; return false
+            }
+            return true
+        }
+        guard accepted else { return (nil, "DEVELOPER_BUSY") }
+        defer { Self.clientQueue.sync { if pendingDeveloperTool === pending { pendingDeveloperTool = nil } } }
+        guard pending.semaphore.wait(timeout: .now() + .seconds(10)) == .success,
+              let payload = pending.payload, let actual = payload["identity"] as? [String: Any],
+              ["bundle_id", "executable_uuid", "debug_dylib_uuid", "process_nonce", "connection_nonce"].allSatisfy({
+                  actual[$0] is String && actual[$0] as? String == identity[$0] as? String
+              }), let result = payload["result"] as? [String: Any], result["success"] is Bool else {
+            return (nil, "DEVELOPER_TOOL_UNCONFIRMED")
+        }
+        return (result, nil)
     }
 
 
@@ -351,6 +390,14 @@ class InjectionServer: SimpleSocket {
                     guard let pending = pendingDeveloperScreenshot,
                           metadata["capture_id"] as? String == pending.id else { return }
                     pending.metadata = metadata; pending.data = data; pending.semaphore.signal()
+                }
+            case .developerToolResult:
+                guard let json = readString(maxLength: 4_096), let bytes = json.data(using: .utf8),
+                      let payload = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any] else { return }
+                Self.clientQueue.sync {
+                    guard let pending = pendingDeveloperTool,
+                          payload["operation_id"] as? String == pending.id else { return }
+                    pending.payload = payload; pending.semaphore.signal()
                 }
             case .developerReport:
                 guard let json = readString(maxLength: 32_768), let encoded = json.data(using: .utf8),
