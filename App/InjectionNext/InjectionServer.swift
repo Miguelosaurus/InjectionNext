@@ -81,11 +81,11 @@ class InjectionServer: SimpleSocket {
         }
     }
 
-    func requestDeveloperScreenshot(identity: [String: Any]) -> (Data?, String?) {
+    func requestDeveloperScreenshot(identity: [String: Any]) -> (Data?, [String: Any]?, String?) {
         let pending = PendingDeveloperScreenshot()
         let request: [String: Any] = ["capture_id": pending.id, "expected_identity": identity]
         guard let encoded = try? JSONSerialization.data(withJSONObject: request),
-              let json = String(data: encoded, encoding: .utf8) else { return (nil, "DEVELOPER_REQUEST_INVALID") }
+              let json = String(data: encoded, encoding: .utf8) else { return (nil, nil, "DEVELOPER_REQUEST_INVALID") }
         let accepted = Self.clientQueue.sync { () -> Bool in
             guard pendingDeveloperScreenshot == nil, swiftSimMetadata?["identity"] is [String: Any] else { return false }
             pendingDeveloperScreenshot = pending
@@ -94,16 +94,15 @@ class InjectionServer: SimpleSocket {
             }
             return true
         }
-        guard accepted else { return (nil, "DEVELOPER_BUSY") }
+        guard accepted else { return (nil, nil, "DEVELOPER_BUSY") }
         defer { Self.clientQueue.sync { if pendingDeveloperScreenshot === pending { pendingDeveloperScreenshot = nil } } }
         guard pending.semaphore.wait(timeout: .now() + .seconds(8)) == .success,
-              let metadata = pending.metadata else { return (nil, "DEVELOPER_CAPTURE_TIMEOUT") }
-        if let code = metadata["error"] as? String { return (nil, code) }
+              let metadata = pending.metadata else { return (nil, nil, "DEVELOPER_CAPTURE_TIMEOUT") }
+        if let code = metadata["error"] as? String { return (nil, nil, code) }
         guard let actual = metadata["identity"] as? [String: Any],
-              ["bundle_id", "executable_uuid", "debug_dylib_uuid", "process_nonce", "connection_nonce", "root_revision"].allSatisfy({
-                String(describing: actual[$0] ?? "") == String(describing: identity[$0] ?? "")
-              }), let image = pending.data, DeveloperReportStore.validJPEG(image) else { return (nil, "DEVELOPER_CAPTURE_CHANGED") }
-        return (image, nil)
+              DeveloperReportStore.sameCaptureIdentity(actual, identity),
+              let image = pending.data, DeveloperReportStore.validJPEG(image) else { return (nil, nil, "DEVELOPER_CAPTURE_CHANGED") }
+        return (image, actual, nil)
     }
 
     func requestDeveloperTool(_ request: [String: Any], identity: [String: Any]) -> ([String: Any]?, String?) {

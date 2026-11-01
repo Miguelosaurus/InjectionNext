@@ -1,6 +1,66 @@
 #if DEBUG || !SWIFT_PACKAGE
 import Foundation
 
+enum DeveloperCaptureEvidence {
+    static func sameIdentity(_ lhs: [String: Any], _ rhs: [String: Any]) -> Bool {
+        for key in ["bundle_id", "executable_uuid", "debug_dylib_uuid", "process_nonce", "connection_nonce"] {
+            guard let value = lhs[key] as? String, value == rhs[key] as? String else { return false }
+        }
+        guard let revision = lhs["root_revision"] as? Int, revision >= 0,
+              revision == rhs["root_revision"] as? Int else { return false }
+        return lhs["is_active"] as? Bool == true && rhs["is_active"] as? Bool == true
+    }
+
+    static func isCurrent(_ captured: [String: Any], _ current: [String: Any],
+                          sequence: Int, currentSequence: Int, pending: Bool) -> Bool {
+        !pending && sequence == currentSequence && sameIdentity(captured, current)
+    }
+}
+
+/// One request-scoped rendezvous. Expiry cancels queued capture work without
+/// leaving the socket reader waiting on a blocked main thread.
+final class DeveloperCaptureTicket<Value> {
+    let deadline: TimeInterval
+    private let clock: () -> TimeInterval
+    private let lock = NSLock()
+    private let semaphore = DispatchSemaphore(value: 0)
+    private var cancelled = false
+    private var started = false
+    private var finished = false
+    private var value: Value?
+
+    init(timeout: TimeInterval = 0.5,
+         clock: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+        self.clock = clock; deadline = clock() + timeout
+    }
+
+    var isValid: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return !cancelled && clock() <= deadline
+    }
+
+    func begin() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !cancelled, !started, clock() <= deadline else { return false }
+        started = true; return true
+    }
+
+    func finish(_ result: Value?) {
+        lock.lock()
+        guard !cancelled, !finished, clock() <= deadline else { lock.unlock(); return }
+        finished = true; value = result
+        lock.unlock(); semaphore.signal()
+    }
+
+    func wait() -> Value? {
+        let remaining = max(0, deadline - clock())
+        let completed = semaphore.wait(timeout: .now() + remaining) == .success
+        lock.lock(); defer { lock.unlock() }
+        defer { cancelled = true; value = nil }
+        return completed && clock() <= deadline ? value : nil
+    }
+}
+
 /// A bounded process-local ledger. Reconnecting cannot replay an accepted UI action.
 /// The ledger is allocated only when a developer explicitly invokes a tool.
 final class DeveloperToolLedger {

@@ -31,6 +31,17 @@ final class DeveloperReportStore {
         }
     }
 
+    static func sameCaptureIdentity(_ identity: [String: Any], _ expected: [String: Any]) -> Bool {
+        guard matches(identity, selector: expected),
+              let revision = identity["root_revision"] as? Int, revision >= 0,
+              revision == expected["root_revision"] as? Int,
+              identity["is_active"] as? Bool == true, expected["is_active"] as? Bool == true else { return false }
+        return ["process_nonce", "connection_nonce"].allSatisfy { key in
+            guard let value = identity[key] as? String else { return false }
+            return value == expected[key] as? String
+        }
+    }
+
     static func validJPEG(_ data: Data) -> Bool {
         guard !data.isEmpty, data.count <= maxImageBytes,
               data.starts(with: [0xff, 0xd8, 0xff]),

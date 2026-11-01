@@ -530,8 +530,10 @@ class ControlServer {
         if params["screenshot"] as? Bool == true {
             guard identity["is_active"] as? Bool == true else { return .fail("DEVELOPER_NOT_FOREGROUND") }
             guard !PreparedDeliveryEngine.hasPending(for: identity) else { return .fail("DEVELOPER_BUSY") }
-            let (image, error) = client.requestDeveloperScreenshot(identity: identity)
-            guard let image else { return .fail(error ?? "DEVELOPER_CAPTURE_UNAVAILABLE") }
+            let (image, capturedIdentity, error) = client.requestDeveloperScreenshot(identity: identity)
+            guard let image, let capturedIdentity,
+                  DeveloperReportStore.sameCaptureIdentity(capturedIdentity, identity) else { return .fail(error ?? "DEVELOPER_CAPTURE_UNAVAILABLE") }
+            result["identity"] = capturedIdentity
             result["screenshot"] = ["mimeType": "image/jpeg", "bytes": image.count, "data": image.base64EncodedString()]
         }
         return .ok(result)

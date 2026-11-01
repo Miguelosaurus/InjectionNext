@@ -31,6 +31,11 @@ final class PreparedDeliveryFeedback {
     private var sequence = 0
     private let publish: ([String: Any]) -> Void
 
+    var captureSequence: Int {
+        lock.lock(); defer { lock.unlock() }
+        return sequence
+    }
+
     init(publish: @escaping ([String: Any]) -> Void = {
         NotificationCenter.default.post(name: PreparedDeliveryFeedback.notification,
                                         object: nil, userInfo: $0)

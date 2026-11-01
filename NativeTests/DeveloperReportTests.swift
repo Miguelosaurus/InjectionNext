@@ -21,6 +21,11 @@ struct DeveloperReportTests {
         var wrong = identity; wrong["executable_uuid"] = UUID().uuidString
         require(!DeveloperReportStore.matches(identity, selector: wrong), "other binary refused")
         require(!DeveloperReportStore.matches(identity, selector: [:]), "unscoped selector refused")
+        require(DeveloperReportStore.sameCaptureIdentity(identity, identity), "actual capture identity admitted")
+        var newer = identity; newer["root_revision"] = 5
+        require(!DeveloperReportStore.sameCaptureIdentity(newer, identity), "Mac rejects a newer capture under an older requested revision")
+        newer = identity; newer["connection_nonce"] = UUID().uuidString
+        require(!DeveloperReportStore.sameCaptureIdentity(newer, identity), "Mac rejects a reconnected capture")
         rejected { _ = try store.latest(selector: identity) }
         require(!FileManager.default.fileExists(atPath: parent.appendingPathComponent("reports").path), "read does not initialize store")
         let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 1, pixelsHigh: 1, bitsPerSample: 8,

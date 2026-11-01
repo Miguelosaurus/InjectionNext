@@ -149,63 +149,99 @@ open class InjectionNext: SimpleSocket {
         }
     }
 
+    private struct DeveloperCapturedImage {
+        let image: Data
+        let identity: [String: Any]
+        let sequence: Int
+    }
+
+    private static func sameCaptureIdentity(_ lhs: [String: Any], _ rhs: [String: Any]) -> Bool {
+        DeveloperCaptureEvidence.sameIdentity(lhs, rhs)
+    }
+
     private func developerScreenshot(_ request: [String: Any]) {
         guard let captureID = request["capture_id"] as? String, UUID(uuidString: captureID) != nil else { return }
         let identity = clientIdentity()
         var result: [String: Any] = ["capture_id": captureID, "identity": identity]
-        var image: Data?
         let expected = request["expected_identity"] as? [String: Any] ?? [:]
-        guard ["bundle_id", "executable_uuid", "debug_dylib_uuid", "process_nonce", "connection_nonce"].allSatisfy({
-            expected[$0] as? String == identity[$0] as? String && expected[$0] is String
-        }) else {
-            result["error"] = "DEVELOPER_IDENTITY_MISMATCH"
-            sendDeveloperScreenshot(result, image: nil); return
+        guard Self.sameCaptureIdentity(expected, identity) else {
+            result["error"] = "DEVELOPER_CAPTURE_CHANGED"
+            sendDeveloperScreenshot(result, capture: nil); return
         }
         if PreparedDeliveryLedger.shared.hasPending { result["error"] = "DEVELOPER_BUSY" }
-        else if identity["is_active"] as? Bool != true { result["error"] = "DEVELOPER_NOT_FOREGROUND" }
-        else {
-            image = boundedDeveloperScreenshot()
-            if image == nil { result["error"] = "DEVELOPER_CAPTURE_UNAVAILABLE" }
-        }
-        sendDeveloperScreenshot(result, image: image)
+        else if let capture = boundedDeveloperScreenshot(expected: expected) {
+            result["identity"] = capture.identity
+            sendDeveloperScreenshot(result, capture: capture); return
+        } else { result["error"] = "DEVELOPER_CAPTURE_UNAVAILABLE" }
+        sendDeveloperScreenshot(result, capture: nil)
     }
 
-    private func sendDeveloperScreenshot(_ metadata: [String: Any], image: Data?) {
-        guard let bytes = try? JSONSerialization.data(withJSONObject: metadata),
-              let json = String(data: bytes, encoding: .utf8) else { return }
+    private func sendDeveloperScreenshot(_ metadata: [String: Any], capture: DeveloperCapturedImage?) {
         responseQueue.async {
+            var result = metadata
+            var image = capture?.image ?? Data()
+            // The response can queue behind a native receipt. Revalidate again
+            // before framing so a delayed image is never attached to newer code.
+            if let capture, !DeveloperCaptureEvidence.isCurrent(capture.identity, self.clientIdentity(),
+                sequence: capture.sequence, currentSequence: PreparedDeliveryFeedback.shared.captureSequence,
+                pending: PreparedDeliveryLedger.shared.hasPending) {
+                result["error"] = "DEVELOPER_CAPTURE_CHANGED"; image = Data()
+            }
+            guard let bytes = try? JSONSerialization.data(withJSONObject: result),
+                  let json = String(data: bytes, encoding: .utf8) else { return }
             _ = self.writePrepared(command: InjectionResponse.developerScreenshotData.rawValue,
-                metadata: json, data: image ?? Data(), timeout: 0.3)
+                metadata: json, data: image, timeout: 0.3)
         }
     }
 
-    /// Capture only an unambiguous foreground scene; no global first-window guess.
-    /// The hierarchy draw is on main, compression runs on the existing reader.
-    private func boundedDeveloperScreenshot() -> Data? {
+    /// The socket reader waits at most half a second for the main hierarchy
+    /// draw. A late queued block is a no-op; compression stays on this reader.
+    private func boundedDeveloperScreenshot(expected: [String: Any]) -> DeveloperCapturedImage? {
         #if canImport(UIKit) && !os(watchOS)
-        var image: UIImage?
-        let capture = {
-            guard UIApplication.shared.applicationState == .active else { return }
+        guard !Thread.isMainThread else { return nil }
+        typealias Snapshot = (image: UIImage, identity: [String: Any], sequence: Int)
+        let ticket = DeveloperCaptureTicket<Snapshot>()
+        let draw: () -> Snapshot? = {
+            guard ticket.isValid, UIApplication.shared.applicationState == .active,
+                  !PreparedDeliveryLedger.shared.hasPending else { return nil }
+            let identity = self.clientIdentity()
+            let sequence = PreparedDeliveryFeedback.shared.captureSequence
+            guard Self.sameCaptureIdentity(expected, identity) else { return nil }
             let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
                 .filter { $0.activationState == .foregroundActive }
-            guard scenes.count == 1 else { return }
+            guard scenes.count == 1 else { return nil }
             let windows = scenes[0].windows.filter { !$0.isHidden && $0.alpha > 0 && $0.windowLevel == .normal }
             let candidates = windows.filter { $0.isKeyWindow }
             guard let window = candidates.count == 1 ? candidates.first : (windows.count == 1 ? windows.first : nil),
-                  window.bounds.width > 0, window.bounds.height > 0 else { return }
+                  window.bounds.width > 0, window.bounds.height > 0, ticket.isValid else { return nil }
             let format = UIGraphicsImageRendererFormat()
             format.scale = min(window.screen.scale, sqrt(1_950_000 / (window.bounds.width * window.bounds.height)))
             format.preferredRange = .standard
             var complete = false
-            let rendered = UIGraphicsImageRenderer(size: window.bounds.size, format: format).image { _ in
+            let image = UIGraphicsImageRenderer(size: window.bounds.size, format: format).image { _ in
+                guard ticket.isValid else { return }
                 complete = window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
             }
-            if complete { image = rendered }
+            guard complete, ticket.isValid, !PreparedDeliveryLedger.shared.hasPending,
+                  sequence == PreparedDeliveryFeedback.shared.captureSequence,
+                  Self.sameCaptureIdentity(identity, self.clientIdentity()) else { return nil }
+            return (image, identity, sequence)
         }
-        Thread.isMainThread ? capture() : DispatchQueue.main.sync(execute: capture)
-        guard let image else { return nil }
+        DispatchQueue.main.async {
+            guard ticket.begin() else { return }
+            ticket.finish(draw())
+        }
+        guard let snapshot = ticket.wait() else { return nil }
         for quality in [CGFloat(0.8), 0.6, 0.4] {
-            if let bytes = image.jpegData(compressionQuality: quality), bytes.count <= 1_048_576 { return bytes }
+            guard !PreparedDeliveryLedger.shared.hasPending,
+                  snapshot.sequence == PreparedDeliveryFeedback.shared.captureSequence,
+                  Self.sameCaptureIdentity(snapshot.identity, self.clientIdentity()) else { return nil }
+            if let bytes = snapshot.image.jpegData(compressionQuality: quality), bytes.count <= 1_048_576 {
+                guard !PreparedDeliveryLedger.shared.hasPending,
+                      snapshot.sequence == PreparedDeliveryFeedback.shared.captureSequence,
+                      Self.sameCaptureIdentity(snapshot.identity, self.clientIdentity()) else { return nil }
+                return DeveloperCapturedImage(image: bytes, identity: snapshot.identity, sequence: snapshot.sequence)
+            }
         }
         #endif
         return nil

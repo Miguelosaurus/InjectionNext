@@ -6,6 +6,7 @@ struct DeveloperToolTests {
         if !condition { fatalError(reason) }
     }
     static func main() {
+        captureTests()
         var now: TimeInterval = 100
         let ledger = DeveloperToolLedger(clock: { now })
         var results: [[String: Any]] = []
@@ -42,5 +43,48 @@ struct DeveloperToolTests {
         require(accepted == 1, "32 racing identical requests admit one UI mutation")
         require(concurrent.complete(id: "same", result: ["success": true]), "racing owner completes once")
         print("Developer tool at-most-once, stale reply, uncertainty and concurrency checks passed")
+    }
+
+    static func captureTests() {
+        let blocked = DispatchQueue(label: "BlockedCaptureFixture")
+        let release = DispatchSemaphore(value: 0)
+        let ticket = DeveloperCaptureTicket<Int>(timeout: 0.02)
+        var draws = 0
+        blocked.async { release.wait() }
+        blocked.async {
+            guard ticket.begin() else { return }
+            draws += 1; ticket.finish(7)
+        }
+        let start = ProcessInfo.processInfo.systemUptime
+        require(ticket.wait() == nil, "blocked main equivalent times out")
+        require(ProcessInfo.processInfo.systemUptime - start < 0.5, "capture reader is not wedged by queued UI work")
+        release.signal(); blocked.sync {}
+        require(draws == 0, "late queued capture does no hierarchy draw")
+        require(!ticket.begin(), "cancelled ticket cannot be revived")
+
+        var now: TimeInterval = 10
+        let expired = DeveloperCaptureTicket<Int>(timeout: 0.5, clock: { now })
+        require(expired.begin(), "timely capture begins once")
+        now += 1
+        expired.finish(9)
+        require(expired.wait() == nil, "late draw completion cannot retain or publish pixels")
+        let timely = DeveloperCaptureTicket<Int>()
+        require(timely.begin(), "fresh ticket begins")
+        timely.finish(11)
+        require(timely.wait() == 11, "timely completed draw is returned")
+
+        let identity: [String: Any] = ["bundle_id": "example.fixture", "executable_uuid": "exec",
+            "debug_dylib_uuid": "debug", "process_nonce": "process", "connection_nonce": "connection",
+            "root_revision": 4, "is_active": true]
+        require(DeveloperCaptureEvidence.isCurrent(identity, identity, sequence: 3, currentSequence: 3, pending: false), "exact capture evidence admitted")
+        for key in ["bundle_id", "executable_uuid", "debug_dylib_uuid", "process_nonce", "connection_nonce"] {
+            var changed = identity; changed[key] = "changed"
+            require(!DeveloperCaptureEvidence.isCurrent(identity, changed, sequence: 3, currentSequence: 3, pending: false), "capture identity change refused: " + key)
+        }
+        var revision = identity; revision["root_revision"] = 5
+        require(!DeveloperCaptureEvidence.isCurrent(identity, revision, sequence: 3, currentSequence: 3, pending: false), "newer code cannot inherit older image identity")
+        require(!DeveloperCaptureEvidence.isCurrent(identity, identity, sequence: 3, currentSequence: 4, pending: false), "changed delivery phase invalidates image even before revision advances")
+        require(!DeveloperCaptureEvidence.isCurrent(identity, identity, sequence: 3, currentSequence: 3, pending: true), "pending native application invalidates image")
+        print("Capture timeout cancellation and exact revision/phase fences passed")
     }
 }
