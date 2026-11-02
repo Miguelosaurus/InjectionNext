@@ -11,6 +11,7 @@ enum PreparedDeliveryEngine {
         let processNonce: String
         let coverageDigest: String
         let proof: PreparedReplacementProof?
+        var refreshStrategy = "remount"
         let expectedIdentity: [String: String]
         var attemptID: String
         var baselineRevision: Int
@@ -84,6 +85,9 @@ enum PreparedDeliveryEngine {
               let identity = metadata["identity"] as? [String: Any],
               let clientCapabilities = metadata["capabilities"] as? [String],
               Set(capabilities).isSubset(of: Set(clientCapabilities)) else { return .fail("PREPARED_CLIENT_UNAVAILABLE") }
+        let refreshStrategy = params["refresh_strategy"] as? String ?? "remount"
+        guard ["remount", "preserve-state-v1"].contains(refreshStrategy),
+              refreshStrategy != "preserve-state-v1" || (proof != nil && clientCapabilities.contains("state-preserving-refresh-v1")) else { return .fail("PREPARED_REFRESH_STRATEGY_UNSUPPORTED") }
         if proof != nil && !clientCapabilities.contains("replacement-proof-v3") { return .fail("PREPARED_REPLACEMENT_PROOF_UNSUPPORTED") }
         for key in ["bundle_id", "build_number", "executable_uuid", "debug_dylib_uuid", "process_nonce"] {
             guard let value = expected[key] as? String, !value.isEmpty,
@@ -96,6 +100,7 @@ enum PreparedDeliveryEngine {
         var envelope: [String: Any] = ["request_id": requestID, "patch_digest": patchDigest,
             "expires_at_ms": expiry, "baseline_revision": baseline, "attempt_id": attemptID, "expected_identity": expected]
         if let proof { envelope["replacement_proof"] = proof.object }
+        envelope["refresh_strategy"] = refreshStrategy
         guard let encoded = try? JSONSerialization.data(withJSONObject: envelope), encoded.count <= 16_384,
               let json = String(data: encoded, encoding: .utf8) else { return .fail("PREPARED_REQUEST_INVALID") }
         let expectedStrings = Dictionary(uniqueKeysWithValues: ["bundle_id", "build_number", "executable_uuid", "debug_dylib_uuid", "process_nonce"].map { ($0, expected[$0] as! String) })
@@ -104,7 +109,7 @@ enum PreparedDeliveryEngine {
         // A second concurrent retry cannot overwrite the first attempt's claim.
         let decision: (send: Bool, response: ControlServer.ActionResult) = queue.sync {
             if var existing = receipts[key] {
-                guard existing.digest == patchDigest, existing.coverageDigest == (proof?.digest ?? ""),
+                guard existing.digest == patchDigest, existing.coverageDigest == (proof?.digest ?? ""), existing.refreshStrategy == refreshStrategy,
                       existing.expectedIdentity == expectedStrings else {
                     return (false, .fail("PREPARED_RECEIPT_CONFLICT_OR_CAPACITY"))
                 }
@@ -123,7 +128,7 @@ enum PreparedDeliveryEngine {
             } else {
                 guard receipts.count < 1_024 else { return (false, .fail("PREPARED_RECEIPT_CONFLICT_OR_CAPACITY")) }
                 receipts[key] = Receipt(digest: patchDigest, processNonce: processNonce, coverageDigest: proof?.digest ?? "",
-                                       proof: proof, expectedIdentity: expectedStrings, attemptID: attemptID, baselineRevision: baseline)
+                                       proof: proof, refreshStrategy: refreshStrategy, expectedIdentity: expectedStrings, attemptID: attemptID, baselineRevision: baseline)
             }
             return (true, .ok(["request_id": requestID, "patch_digest": patchDigest, "state": "pending",
                               "client_identity": identity, "engine_instance_nonce": instanceNonce]))
@@ -163,6 +168,7 @@ enum PreparedDeliveryEngine {
                 guard !(applied && refreshed && !succeeded) else { return }
                 if applied && !proof.validatesSuccessfulReport(report) { return }
                 if succeeded {
+                    guard receipt.refreshStrategy != "preserve-state-v1" || report["refresh_strategy"] as? String == "preserve-state-v1" else { return }
                     guard applied, refreshed, report["admission"] as? String == "applied",
                           report["state_uncertain"] == nil || PreparedReplacementProof.boolean(report["state_uncertain"]) == false,
                           (PreparedReplacementProof.integer(report["root_revision"] ?? report["revision"]) ?? 0) > receipt.baselineRevision else { return }

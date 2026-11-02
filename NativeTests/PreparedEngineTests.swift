@@ -128,6 +128,21 @@ struct PreparedEngineTests {
         let unsupported = fresh()
         require(PreparedDeliveryEngine.inject(unsupported).error == "PREPARED_REPLACEMENT_PROOF_UNSUPPORTED", "v3 requires advertised native capability")
         InjectionServer.metadata = ["identity": identity, "capabilities": capabilities]
+        var preserving = fresh(); preserving["refresh_strategy"] = "preserve-state-v1"
+        require(PreparedDeliveryEngine.inject(preserving).error == "PREPARED_REFRESH_STRATEGY_UNSUPPORTED", "preservation requires native capability")
+        InjectionServer.metadata = ["identity": identity, "capabilities": capabilities + ["state-preserving-refresh-v1"]]
+        require(PreparedDeliveryEngine.inject(preserving).success, "qualified preservation admits")
+        InjectionServer.clientQueue.sync {}
+        let preservingEnvelope = try JSONSerialization.jsonObject(with: Data(InjectionServer.lastMetadata.utf8)) as! [String: Any]
+        require(preservingEnvelope["refresh_strategy"] as? String == "preserve-state-v1", "strategy travels with exact native request")
+        var conflicting = preserving; conflicting["refresh_strategy"] = "remount"
+        require(!PreparedDeliveryEngine.inject(conflicting).success, "strategy cannot change on retry")
+        PreparedDeliveryEngine.record(success(preserving), from: InjectionServer.client)
+        require(query(preserving)["state"] as? String == "pending", "ordinary refresh cannot prove preserved refresh")
+        var preserved = success(preserving); preserved["refresh_strategy"] = "preserve-state-v1"
+        PreparedDeliveryEngine.record(preserved, from: InjectionServer.client)
+        require(query(preserving)["state"] as? String == "completed", "exact preserved receipt completes")
+        InjectionServer.metadata = ["identity": identity, "capabilities": capabilities]
         var invalid = fresh(); invalid["baseline_revision"] = true
         require(!PreparedDeliveryEngine.inject(invalid).success, "boolean baseline rejected")
         invalid = fresh(); var hugeIdentity = identity; hugeIdentity["extra"] = String(repeating: "x", count: 17_000); invalid["expected_identity"] = hugeIdentity

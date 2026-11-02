@@ -32,6 +32,16 @@ The process nonce survives reconnects but changes on a new process launch.
 These are fences reported by an authenticated private Debug client, not a new
 public application-attestation service.
 
+State-preserving refresh is an additive opt-in. Status advertises
+`state_preserving_refresh_protocol: 1`; native clients advertise
+`state-preserving-refresh-v1`. Only complete v3 requests may select
+`refresh_strategy: preserve-state-v1`. The strategy is part of both ledgers'
+duplicate identity. An ordered main-queue policy binds request, patch digest and
+baseline to the SDK's ordinary injection notification. Success requires the SDK
+to acknowledge the same binding and strategy with an advanced root revision.
+Missing support or an ordinary remount cannot stand in for preserved refresh.
+The default remains `remount`; there is no extra network round trip.
+
 ## Private Unix-socket actions
 
 - `prepare_dylib`: a regular, singly linked, owner-only `.dylib` in the private

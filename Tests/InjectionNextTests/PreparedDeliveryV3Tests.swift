@@ -13,7 +13,7 @@ final class PreparedDeliveryV3Tests: XCTestCase {
     }
     func testPendingAndCachedClaimsBindCoverageAttemptAndBaseline() {
         for completed in [false, true] {
-            for key in ["replacement_proof", "attempt_id", "baseline_revision"] {
+            for key in ["replacement_proof", "attempt_id", "baseline_revision", "refresh_strategy"] {
                 let ledger = PreparedDeliveryLedger(feedback: nil)
                 let original = request()
                 XCTAssertTrue(ledger.begin(request: original, data: data, identity: identity, now: 1_000) { _ in })
@@ -22,6 +22,7 @@ final class PreparedDeliveryV3Tests: XCTestCase {
                 if key == "replacement_proof" { changed[key] = ["version": 3, "swift_replacements": 2, "objc_callbacks": []] }
                 if key == "attempt_id" { changed[key] = "attempt-2" }
                 if key == "baseline_revision" { changed[key] = 2 }
+                if key == "refresh_strategy" { changed[key] = "preserve-state-v1" }
                 var error: String?
                 XCTAssertFalse(ledger.begin(request: changed, data: data, identity: identity, now: 1_000) { error = $0["error_code"] as? String })
                 XCTAssertEqual(error, "PREPARED_REQUEST_CONFLICT", "\(key), cached=\(completed)")
@@ -29,7 +30,7 @@ final class PreparedDeliveryV3Tests: XCTestCase {
         }
     }
     func testStaleFinisherDoesNotResolveClaim() {
-        for key in ["attempt_id", "baseline_revision", "replacement_proof"] {
+        for key in ["attempt_id", "baseline_revision", "replacement_proof", "refresh_strategy"] {
             let ledger = PreparedDeliveryLedger(feedback: nil); let original = request()
             var reports = [[String: Any]]()
             XCTAssertTrue(ledger.begin(request: original, data: data, identity: identity, now: 1_000) { reports.append($0) })
@@ -37,6 +38,7 @@ final class PreparedDeliveryV3Tests: XCTestCase {
             if key == "attempt_id" { changed[key] = "stale" }
             if key == "baseline_revision" { changed[key] = 2 }
             if key == "replacement_proof" { changed[key] = ["version": 3, "swift_replacements": 2, "objc_callbacks": []] }
+            if key == "refresh_strategy" { changed[key] = "preserve-state-v1" }
             ledger.finish(request: changed, identity: identity, report: ["applied": true])
             XCTAssertTrue(reports.isEmpty)
             ledger.finish(request: original, identity: identity, report: ["applied": false])
@@ -76,5 +78,12 @@ final class PreparedDeliveryV3Tests: XCTestCase {
         original = request(); var wrongRoot = identity; wrongRoot["root_revision"] = true
         XCTAssertFalse(PreparedDeliveryLedger(feedback: nil).begin(request: original, data: data, identity: wrongRoot, now: 1_000) { code = $0["error_code"] as? String })
         XCTAssertEqual(code, "PREPARED_BASELINE_MISMATCH")
+    }
+    func testPreservationRequiresCompleteReplacementProof() {
+        var original = request(); original["refresh_strategy"] = "preserve-state-v1"
+        original.removeValue(forKey: "replacement_proof")
+        var code: String?
+        XCTAssertFalse(PreparedDeliveryLedger(feedback: nil).begin(request: original, data: data, identity: identity, now: 1_000) { code = $0["error_code"] as? String })
+        XCTAssertEqual(code, "PREPARED_REFRESH_STRATEGY_INVALID")
     }
 }

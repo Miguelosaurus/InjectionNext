@@ -593,20 +593,38 @@ open class InjectionNext: SimpleSocket {
                 let dynamicReplacements = PreparedPatchEvidence.dynamicReplacementCount(in: image)
                 let objcCategories = image.entries(withPrefix: "_OBJC_$_CATEGORY_").count
                 var refreshRevision: Int?
+                var refreshStrategy: String?
+                var refreshBindingMatches = false
                 let acknowledgement = NotificationCenter.default.addObserver(
                     forName: Notification.Name("SWIFT_SIM_LIVE_REVISION_APPLIED"),
                     object: nil,
                     queue: nil
                 ) { notification in
                     refreshRevision = PreparedReplacementProof.integer(notification.userInfo?["revision"])
+                    refreshStrategy = notification.userInfo?["refresh_strategy"] as? String
+                    refreshBindingMatches = notification.userInfo?["request_id"] as? String == prepared?["request_id"] as? String
+                        && notification.userInfo?["patch_digest"] as? String == prepared?["patch_digest"] as? String
+                        && PreparedReplacementProof.integer(notification.userInfo?["baseline_revision"]) == PreparedReplacementProof.integer(prepared?["baseline_revision"])
                 }
                 if let prepared { PreparedDeliveryFeedback.shared.advance(prepared, phase: "waiting-for-refresh") }
+                let refreshInfo = prepared.map { request -> [AnyHashable: Any] in
+                    ["request_id": request["request_id"] ?? "", "patch_digest": request["patch_digest"] ?? "",
+                     "baseline_revision": request["baseline_revision"] ?? -1,
+                     "refresh_strategy": request["refresh_strategy"] ?? "remount"]
+                }
+                // FIFO on main: bind the policy immediately before the sweeper's
+                // injection notification without modifying upstream submodules.
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(name: Notification.Name("SWIFT_SIM_NATIVE_REFRESH_POLICY"), object: nil, userInfo: refreshInfo)
+                }
                 loader.sweeper.sweepAndRunTests(image: image, classes: classes)
                 DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(10)) {
                     NotificationCenter.default.removeObserver(acknowledgement)
                     let managedPatch = URL(fileURLWithPath: dylib)
                         .lastPathComponent.contains("swift_sim_dynamic")
-                    let refreshAcknowledged = refreshRevision != nil
+                    let strategyMatches = prepared?["refresh_strategy"] as? String != "preserve-state-v1"
+                        || (refreshStrategy == "preserve-state-v1" && refreshBindingMatches)
+                    let refreshAcknowledged = refreshRevision != nil && strategyMatches
                     let coverage = replacementProof?.evaluate(captures: callbackCaptures, imagePath: image.imagePath, swiftCount: dynamicReplacements)
                     let expectedImage = URL(fileURLWithPath: dylib).standardizedFileURL.resolvingSymlinksInPath().path
                     let actualImage = URL(fileURLWithPath: image.imagePath).standardizedFileURL.resolvingSymlinksInPath().path
@@ -622,7 +640,7 @@ open class InjectionNext: SimpleSocket {
                         "objc_categories": objcCategories,
                         "dynamic_replacements": dynamicReplacements,
                         "refresh_acknowledged": refreshAcknowledged,
-                        "revision": refreshRevision ?? 0
+                        "revision": refreshRevision ?? 0, "refresh_strategy": refreshStrategy ?? "remount"
                     ]
                     if let coverage {
                         report.merge(coverage, uniquingKeysWith: { _, latest in latest })

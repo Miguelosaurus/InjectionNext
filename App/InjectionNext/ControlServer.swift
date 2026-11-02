@@ -286,6 +286,7 @@ class ControlServer {
             result["engine_mode"] = AppDelegate.isSwiftSimEngine
             result["engine_instance_nonce"] = PreparedDeliveryEngine.instanceNonce
             result["prepared_delivery_protocol"] = 1
+            result["state_preserving_refresh_protocol"] = 1
             result["prepared_replacement_proof_protocol"] = PreparedDeliveryEngine.replacementProofProtocol
             result["compilation_registration_protocol"] = 1
             if let (_, metadata) = InjectionServer.preparedTarget() {

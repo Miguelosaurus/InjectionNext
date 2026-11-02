@@ -6,7 +6,7 @@ import CryptoKit
 /// replacement variable and may also emit a `TI` implementation variable. The
 /// linker can dead-strip the unused TI while retaining the active replacement.
 enum PreparedPatchEvidence {
-    static let clientCapabilities = ["prepared-delivery-v1", "reconnect-v1", "receipt-v1", "replacement-proof-v2", "replacement-proof-v3", "developer-context-v1", "developer-inspection-v1"]
+    static let clientCapabilities = ["prepared-delivery-v1", "reconnect-v1", "receipt-v1", "replacement-proof-v2", "replacement-proof-v3", "developer-context-v1", "developer-inspection-v1", "state-preserving-refresh-v1"]
 
     static func dynamicReplacementCount(in image: ImageSymbols) -> Int {
         Set(image.swiftSymbols(withSuffixes: ["TI", "TX"])
@@ -120,6 +120,7 @@ final class PreparedDeliveryLedger {
         let attemptID: String
         let baselineRevision: Int
         let expectedIdentity: [String: String]
+        var refreshStrategy = "remount"
         var report: [String: Any]?
         var callbacks: [([String: Any]) -> Void]
     }
@@ -170,10 +171,13 @@ final class PreparedDeliveryLedger {
         let proof: PreparedReplacementProof?
         do { proof = try PreparedReplacementProof.parse(request["replacement_proof"]) }
         catch { return reject("PREPARED_REPLACEMENT_PROOF_INVALID") }
+        let refreshStrategy = request["refresh_strategy"] as? String ?? "remount"
+        guard ["remount", "preserve-state-v1"].contains(refreshStrategy),
+              refreshStrategy != "preserve-state-v1" || proof != nil else { return reject("PREPARED_REFRESH_STRATEGY_INVALID") }
         let coverageDigest = proof?.digest ?? ""
         lock.lock()
         if var entry = entries[requestID] {
-            guard entry.digest == digest, entry.coverageDigest == coverageDigest,
+            guard entry.digest == digest, entry.coverageDigest == coverageDigest, entry.refreshStrategy == refreshStrategy,
                   entry.expectedIdentity.allSatisfy({ expected[$0.key] as? String == $0.value }),
                   proof == nil || (entry.attemptID == attemptID && entry.baselineRevision == baseline) else { lock.unlock(); return reject("PREPARED_REQUEST_CONFLICT") }
             if let report = entry.report { lock.unlock(); deliver(report); return false }
@@ -187,7 +191,7 @@ final class PreparedDeliveryLedger {
               identity["root_ready"] as? Bool == true else { lock.unlock(); return reject("PREPARED_WAITING_FOR_FOREGROUND", noEffect: true) }
         guard PreparedReplacementProof.integer(identity["root_revision"]) == baseline else { lock.unlock(); return reject("PREPARED_BASELINE_MISMATCH", noEffect: true) }
         guard entries.count < capacity else { lock.unlock(); return reject("PREPARED_RECEIPT_CAPACITY") }
-        entries[requestID] = Entry(digest: digest, coverageDigest: coverageDigest, attemptID: attemptID, baselineRevision: baseline, expectedIdentity: expected.compactMapValues { $0 as? String }.filter { ["bundle_id", "build_number", "executable_uuid", "debug_dylib_uuid", "process_nonce"].contains($0.key) }, callbacks: [deliver])
+        entries[requestID] = Entry(digest: digest, coverageDigest: coverageDigest, attemptID: attemptID, baselineRevision: baseline, expectedIdentity: expected.compactMapValues { $0 as? String }.filter { ["bundle_id", "build_number", "executable_uuid", "debug_dylib_uuid", "process_nonce"].contains($0.key) }, refreshStrategy: refreshStrategy, callbacks: [deliver])
         lock.unlock()
         feedback?.begin(request)
         return true
@@ -202,7 +206,7 @@ final class PreparedDeliveryLedger {
         guard var entry = entries[requestID], entry.digest == digest, entry.coverageDigest == (proof?.digest ?? ""),
               proof == nil || request["attempt_id"] as? String == entry.attemptID,
               proof == nil || PreparedReplacementProof.integer(request["baseline_revision"]) == entry.baselineRevision,
-              entry.report == nil else {
+              entry.refreshStrategy == (request["refresh_strategy"] as? String ?? "remount"), entry.report == nil else {
             lock.unlock(); return
         }
         var result = report
