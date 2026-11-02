@@ -541,7 +541,7 @@ class ControlServer {
 
     private func developerTool(_ params: [String: Any]) -> ActionResult {
         guard let operationID = params["operation_id"] as? String, UUID(uuidString: operationID) != nil,
-              let tool = params["tool"] as? String, ["appearance", "refresh"].contains(tool),
+              let tool = params["tool"] as? String, ["appearance", "refresh", "inspect"].contains(tool),
               tool != "appearance" || ["app-default", "light", "dark"].contains(params["value"] as? String ?? ""),
               ["bundle_id", "executable_uuid", "debug_dylib_uuid", "process_nonce", "connection_nonce"].allSatisfy({
                   guard let value = params[$0] as? String else { return false }; return !value.isEmpty && value.utf8.count <= 256
@@ -558,6 +558,7 @@ class ControlServer {
             return .fail("DEVELOPER_NOT_FOREGROUND")
         }
         guard !PreparedDeliveryEngine.hasPending(for: identity) else { return .fail("DEVELOPER_BUSY") }
+        if tool == "inspect", !capabilities.contains("developer-inspection-v1") { return .fail("DEVELOPER_CONTEXT_UNSUPPORTED") }
         var request: [String: Any] = ["operation_id": operationID.lowercased(), "tool": tool]
         if tool == "appearance" { request["value"] = params["value"] }
         let (result, error) = client.requestDeveloperTool(request, identity: identity)

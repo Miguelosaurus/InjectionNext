@@ -391,7 +391,7 @@ class InjectionServer: SimpleSocket {
                     pending.metadata = metadata; pending.data = data; pending.semaphore.signal()
                 }
             case .developerToolResult:
-                guard let json = readString(maxLength: 4_096), let bytes = json.data(using: .utf8),
+                guard let json = readString(maxLength: 65_536), let bytes = json.data(using: .utf8),
                       let payload = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any] else { return }
                 Self.clientQueue.sync {
                     guard let pending = pendingDeveloperTool,

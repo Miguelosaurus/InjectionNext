@@ -119,12 +119,24 @@ final class DeveloperToolLedger {
         }
         var result: [String: Any] = ["success": success, "tool": entry.tool]
         if entry.tool == "refresh" { result["presentation_only"] = true }
+        if success && entry.tool == "inspect" {
+            guard let snapshot = input["inspection"] as? [String: Any],
+                  snapshot["schemaVersion"] as? Int == 1,
+                  let bytes = try? JSONSerialization.data(withJSONObject: snapshot), bytes.count <= 32_768 else {
+                lock.unlock(); return false
+            }
+            result["inspection"] = snapshot
+        }
         if !success {
             let code = input["error"] as? String ?? "DEVELOPER_TOOL_UNAVAILABLE"
             result["error"] = code.hasPrefix("DEVELOPER_") && code.utf8.count <= 80 ? code : "DEVELOPER_TOOL_UNAVAILABLE"
         }
         let reply = entry.reply
-        entry.result = result; entry.reply = nil; entries[id] = entry
+        // Inspection content is ephemeral, including labels and input metadata.
+        // Keep only a tiny duplicate tombstone; never accumulate snapshots here.
+        entry.result = entry.tool == "inspect" && success
+            ? ["success": false, "error": "DEVELOPER_INSPECTION_EXPIRED"] : result
+        entry.reply = nil; entries[id] = entry
         lock.unlock()
         reply?(result)
         return true

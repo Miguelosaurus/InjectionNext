@@ -126,7 +126,7 @@ open class InjectionNext: SimpleSocket {
 
     private func developerTool(_ request: [String: Any]) {
         guard let id = request["operation_id"] as? String, UUID(uuidString: id) != nil,
-              let tool = request["tool"] as? String, ["appearance", "refresh"].contains(tool),
+              let tool = request["tool"] as? String, ["appearance", "refresh", "inspect"].contains(tool),
               tool != "appearance" || ["app-default", "light", "dark"].contains(request["value"] as? String ?? "") else { return }
         let operationID = id.lowercased()
         let identity = clientIdentity()

@@ -6,6 +6,7 @@ struct DeveloperToolTests {
         if !condition { fatalError(reason) }
     }
     static func main() {
+        inspectionTests()
         captureTests()
         queuedToolTests()
         var now: TimeInterval = 100
@@ -44,6 +45,21 @@ struct DeveloperToolTests {
         require(accepted == 1, "32 racing identical requests admit one UI mutation")
         require(concurrent.complete(id: "same", result: ["success": true]), "racing owner completes once")
         print("Developer tool at-most-once, stale reply, uncertainty and concurrency checks passed")
+    }
+
+    static func inspectionTests() {
+        let ledger = DeveloperToolLedger()
+        var result: [String: Any] = [:]
+        require(ledger.begin(id: "inspect", tool: "inspect", value: nil, reply: { result = $0 }), "inspection admitted")
+        let snapshot: [String: Any] = ["schemaVersion": 1, "elements": [["label": "Save"]]]
+        require(ledger.complete(id: "inspect", result: ["success": true, "inspection": snapshot]), "bounded snapshot completes")
+        require(result["inspection"] is [String: Any], "request receives its snapshot")
+        require(!ledger.begin(id: "inspect", tool: "inspect", value: nil, reply: { result = $0 }), "duplicate never rescans")
+        require(result["inspection"] == nil && result["error"] as? String == "DEVELOPER_INSPECTION_EXPIRED", "ledger retains no screen content")
+        require(ledger.begin(id: "large", tool: "inspect", value: nil, reply: { _ in }), "new request accepted")
+        require(!ledger.complete(id: "large", result: ["success": true, "inspection": ["schemaVersion": 1, "x": String(repeating: "x", count: 33_000)]]), "oversized screen content rejected")
+        require(ledger.complete(id: "large", result: ["success": false, "error": "DEVELOPER_INSPECTION_UNAVAILABLE"]), "oversized request can fail cleanly")
+        print("Ephemeral bounded inspection response and duplicate tombstone checks passed")
     }
 
     static func queuedToolTests() {

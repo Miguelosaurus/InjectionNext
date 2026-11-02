@@ -6,7 +6,7 @@ import CryptoKit
 /// replacement variable and may also emit a `TI` implementation variable. The
 /// linker can dead-strip the unused TI while retaining the active replacement.
 enum PreparedPatchEvidence {
-    static let clientCapabilities = ["prepared-delivery-v1", "reconnect-v1", "receipt-v1", "replacement-proof-v2", "replacement-proof-v3", "developer-context-v1"]
+    static let clientCapabilities = ["prepared-delivery-v1", "reconnect-v1", "receipt-v1", "replacement-proof-v2", "replacement-proof-v3", "developer-context-v1", "developer-inspection-v1"]
 
     static func dynamicReplacementCount(in image: ImageSymbols) -> Int {
         Set(image.swiftSymbols(withSuffixes: ["TI", "TX"])
