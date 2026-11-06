@@ -75,6 +75,46 @@ final class PreparedPatchEvidenceTests: XCTestCase {
                        "A loaded library without a replacement must still fail the applied-evidence check")
     }
 
+    func testOriginalDynamicSlotsCannotMasqueradeAsLoadedReplacements() throws {
+        XCTAssertTrue(PreparedPatchEvidence.clientCapabilities.contains("stateful-components-v1"))
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("Original.swift")
+        let library = root.appendingPathComponent("original.dylib")
+        try """
+        public dynamic func originalDynamic() -> Int { 7 }
+        public struct OriginalView {
+            public init() {}
+            public dynamic var body: Int { 9 }
+        }
+        """.write(to: source, atomically: true, encoding: .utf8)
+        try compile(["-emit-library", "-emit-module", "-module-name", "SwiftSimOriginalSlots", source.path, "-o", library.path])
+        let originalImage = try XCTUnwrap(DLKit.load(dylib: library.path))
+        XCTAssertEqual(originalImage.swiftSymbols(withSuffixes: ["TX"]).count, 2)
+        XCTAssertEqual(originalImage.swiftSymbols(withSuffixes: ["Tx"]).count, 2)
+        XCTAssertEqual(PreparedPatchEvidence.dynamicReplacementCount(in: originalImage), 0)
+        let patch = root.appendingPathComponent("Mixed.swift")
+        try """
+        import SwiftSimOriginalSlots
+        @_dynamicReplacement(for: originalDynamic()) private func replacement() -> Int { 8 }
+        public dynamic func newHelper() -> Int { 10 }
+        public struct NewView {
+            public init() {}
+            public dynamic var body: Int { 11 }
+        }
+        """.write(to: patch, atomically: true, encoding: .utf8)
+        for (name, flags) in [("normal", []), ("deadstrip", ["-Xlinker", "-dead_strip"])] {
+            let output = root.appendingPathComponent(name + ".dylib")
+            try compile(["-emit-library", "-module-name", "MixedSlots_" + name, "-I", root.path,
+                         "-L", root.path, "-Xlinker", "-undefined", "-Xlinker", "dynamic_lookup"]
+                        + flags + [patch.path, "-o", output.path])
+            let image = try XCTUnwrap(DLKit.load(dylib: output.path))
+            XCTAssertEqual(image.swiftSymbols(withSuffixes: ["TX"]).count, 3)
+            XCTAssertEqual(PreparedPatchEvidence.dynamicReplacementCount(in: image), 1)
+        }
+    }
+
     private func compile(_ arguments: [String]) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
