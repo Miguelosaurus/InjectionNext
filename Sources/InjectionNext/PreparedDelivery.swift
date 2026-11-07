@@ -6,7 +6,12 @@ import CryptoKit
 /// replacement variable and may also emit a `TI` implementation variable. The
 /// linker can dead-strip the unused TI while retaining the active replacement.
 enum PreparedPatchEvidence {
-    static let clientCapabilities = ["prepared-delivery-v1", "reconnect-v1", "receipt-v1", "replacement-proof-v2", "replacement-proof-v3", "developer-context-v1", "developer-inspection-v1", "state-preserving-refresh-v1", "stateful-components-v1", "added-state-slots-v1", "prepared-receipt-query-v1"]
+    #if os(iOS) && !targetEnvironment(simulator)
+    private static let foregroundInstallCapabilities = ["foreground-install-v1"]
+    #else
+    private static let foregroundInstallCapabilities: [String] = []
+    #endif
+    static let clientCapabilities = ["prepared-delivery-v1", "reconnect-v1", "receipt-v1", "replacement-proof-v2", "replacement-proof-v3", "developer-context-v1", "developer-inspection-v1", "state-preserving-refresh-v1", "stateful-components-v1", "added-state-slots-v1", "prepared-receipt-query-v1"] + foregroundInstallCapabilities
 
     static func dynamicReplacementCount(in image: ImageSymbols) -> Int {
         // Original dynamically replaceable declarations have a Tx key as well

@@ -447,6 +447,7 @@ class InjectionServer: SimpleSocket {
                       }), identity["is_active"] is Bool, identity["root_ready"] is Bool,
                       let revision = identity["root_revision"] as? Int, revision >= 0 else { return }
                 Self.clientQueue.sync { swiftSimMetadata = metadata }
+                ControlServer.wakeInstalls()
             case .detail:
                 if let detail = readString() {
                     setenv(INJECTION_DETAIL, detail, 1)
@@ -476,6 +477,7 @@ class InjectionServer: SimpleSocket {
                 }
                 if report["request_id"] is String {
                     PreparedDeliveryEngine.record(report, from: self)
+                    ControlServer.wakeInstalls()
                     continue
                 }
                 let succeeded = report["succeeded"] as? Bool == true

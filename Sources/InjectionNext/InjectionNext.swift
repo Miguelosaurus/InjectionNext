@@ -126,8 +126,13 @@ open class InjectionNext: SimpleSocket {
 
     private func developerTool(_ request: [String: Any]) {
         guard let id = request["operation_id"] as? String, UUID(uuidString: id) != nil,
-              let tool = request["tool"] as? String, ["appearance", "refresh", "inspect"].contains(tool),
+              let tool = request["tool"] as? String, ["appearance", "refresh", "inspect", "install"].contains(tool),
               tool != "appearance" || ["app-default", "light", "dark"].contains(request["value"] as? String ?? "") else { return }
+        if tool == "install" {
+            guard let intent = DeveloperInstallIntent.parse(request["value"] as? String,
+                    bundleID: Bundle.main.bundleIdentifier ?? ""), intent.buildID.lowercased() == id.lowercased(),
+                  intent.build != Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String else { return }
+        }
         let operationID = id.lowercased()
         let identity = clientIdentity()
         let reply: ([String: Any]) -> Void = { result in
@@ -167,6 +172,23 @@ open class InjectionNext: SimpleSocket {
                   InjectionDeveloperConnectionIsCurrent(self),
                   Self.sameCaptureIdentity(identity, self.clientIdentity()),
                   !PreparedDeliveryLedger.shared.hasPending else { reject("DEVELOPER_TOOL_UNCONFIRMED"); return }
+            if tool == "install" {
+                #if os(iOS) && !targetEnvironment(simulator)
+                guard let intent = DeveloperInstallIntent.parse(request["value"] as? String,
+                        bundleID: Bundle.main.bundleIdentifier ?? ""), let url = intent.installURL else {
+                    reject("DEVELOPER_INSTALL_INVALID"); return
+                }
+                // The ledger has claimed this ID before this OS handoff. This opens
+                // Apple's confirmation only; it never confirms or proves installation.
+                UIApplication.shared.open(url, options: [:]) { accepted in
+                    _ = DeveloperToolLedger.shared.complete(id: operationID, result: accepted
+                        ? ["success": true] : ["success": false, "error": "DEVELOPER_INSTALL_OPEN_FAILED"])
+                }
+                #else
+                reject("DEVELOPER_TOOL_UNSUPPORTED")
+                #endif
+                return
+            }
             NotificationCenter.default.post(name: Notification.Name("SWIFT_SIM_DEVELOPER_TOOL_REQUEST"), object: nil, userInfo: info)
             #else
             reject("DEVELOPER_TOOL_UNSUPPORTED")

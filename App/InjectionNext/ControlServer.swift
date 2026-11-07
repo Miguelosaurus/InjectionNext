@@ -28,6 +28,60 @@ class ControlServer {
 
     private static let registrations = CompilationRegistrationRegistry(instanceNonce: PreparedDeliveryEngine.instanceNonce, enqueue: { operation in NextCompiler.compileQueue.async(execute: operation) })
 
+    private static let installLock = NSLock()
+    private static var installQueue: InstallRequestQueue?
+    private static var installPath: URL { URL(fileURLWithPath: NSHomeDirectory() + "/.swift-sim/install-requests.json") }
+
+    private static func installs() throws -> InstallRequestQueue {
+        installLock.lock(); defer { installLock.unlock() }
+        if let installQueue { return installQueue }
+        let queue = try InstallRequestQueue(path: installPath)
+        queue.inspect = { entry in
+            guard let (client, metadata) = InjectionServer.developerTarget(entry.selector),
+                  let identity = metadata["identity"] as? [String: Any],
+                  entry.selector.allSatisfy({ key, value in
+                      guard let actual = identity[key] as? String else { return false }
+                      return key.hasSuffix("_uuid") ? actual.lowercased() == value.lowercased() : actual == value
+                  }) else { return .waiting }
+            guard (metadata["capabilities"] as? [String])?.contains("foreground-install-v1") == true else { return .unsupported }
+            guard InstallRequestQueue.eligible(entry, identity: identity,
+                capabilities: metadata["capabilities"] as? [String] ?? [],
+                pendingReload: PreparedDeliveryEngine.hasPending(for: identity)) else { return .waiting }
+            return .ready {
+                let (result, _) = client.requestDeveloperTool(["operation_id": entry.id, "tool": "install", "value": entry.value], identity: identity)
+                return result?["success"] as? Bool
+            }
+        }
+        installQueue = queue
+        return queue
+    }
+
+    static func wakeInstalls() {
+        installLock.lock(); let queue = installQueue; installLock.unlock()
+        queue?.wake()
+    }
+
+    private func installRequest(_ params: [String: Any]) -> ActionResult {
+        guard let id = params["build_id"] as? String, UUID(uuidString: id) != nil,
+              let operation = params["operation"] as? String else { return .fail("INSTALL_REQUEST_INVALID") }
+        do {
+            let queue = try Self.installs()
+            let entry: InstallRequestQueue.Entry?
+            switch operation {
+            case "enqueue":
+                guard let selector = params["selector"] as? [String: String], let value = params["value"] as? String else { return .fail("INSTALL_REQUEST_INVALID") }
+                entry = try queue.enqueue(id: id.lowercased(), selector: selector, value: value)
+                queue.wake()
+            case "status": entry = try queue.status(id.lowercased())
+            case "cancel": entry = try queue.cancel(id.lowercased())
+            default: return .fail("INSTALL_REQUEST_INVALID")
+            }
+            guard let entry else { return .fail("INSTALL_REQUEST_NOT_FOUND") }
+            return .ok(["build_id": entry.id, "state": entry.state, "expires_at": entry.expiresAt,
+                        "installed": false, "requires_ios_confirmation": true])
+        } catch { return .fail((error as? InstallRequestQueue.Failure)?.rawValue ?? "INSTALL_QUEUE_UNAVAILABLE") }
+    }
+
     private var serverSocket: Int32 = -1
     private let queue = DispatchQueue(label: "ControlServer", attributes: .concurrent)
 
@@ -38,6 +92,10 @@ class ControlServer {
         }
         shared = ControlServer()
         shared?.listen()
+        // No queue allocation or recurring work for users who have never requested an install.
+        if AppDelegate.isSwiftSimEngine && FileManager.default.fileExists(atPath: installPath.path) {
+            _ = try? installs()
+        }
     }
 
     private func listen() {
@@ -153,6 +211,10 @@ class ControlServer {
 
         case "status":
             return getStatus()
+
+        case "install_request":
+            guard AppDelegate.isSwiftSimEngine else { return .fail("DEVELOPER_PRIVATE_ENGINE_REQUIRED") }
+            return installRequest(params)
 
         case "developer_context":
             guard AppDelegate.isSwiftSimEngine else { return .fail("DEVELOPER_PRIVATE_ENGINE_REQUIRED") }
@@ -311,6 +373,7 @@ class ControlServer {
         result["captured_compilations"] = NextCompiler.compileQueue.sync {
             FrontendServer.frontendRecompiler(for: compilationPlatform).compilations.count
         }
+        result["foreground_install_requests"] = AppDelegate.isSwiftSimEngine
         return .ok(result)
     }
 
