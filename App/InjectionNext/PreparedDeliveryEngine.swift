@@ -16,6 +16,8 @@ enum PreparedDeliveryEngine {
         var attemptID: String
         var baselineRevision: Int
         var report: [String: Any]?
+        var sentConnection: String? = nil
+        var queriedConnections: Set<String> = []
     }
     private static let queue = DispatchQueue(label: "SwiftSimPreparedReceipts")
     private static var receipts: [String: Receipt] = [:]
@@ -118,6 +120,8 @@ enum PreparedDeliveryEngine {
                     existing.attemptID = attemptID
                     existing.baselineRevision = baseline
                     existing.report = nil
+                    existing.sentConnection = identity["connection_nonce"] as? String
+                    existing.queriedConnections = []
                     receipts[key] = existing
                 } else {
                     guard proof == nil || (existing.attemptID == attemptID && existing.baselineRevision == baseline) else {
@@ -128,7 +132,7 @@ enum PreparedDeliveryEngine {
             } else {
                 guard receipts.count < 1_024 else { return (false, .fail("PREPARED_RECEIPT_CONFLICT_OR_CAPACITY")) }
                 receipts[key] = Receipt(digest: patchDigest, processNonce: processNonce, coverageDigest: proof?.digest ?? "",
-                                       proof: proof, refreshStrategy: refreshStrategy, expectedIdentity: expectedStrings, attemptID: attemptID, baselineRevision: baseline)
+                                       proof: proof, refreshStrategy: refreshStrategy, expectedIdentity: expectedStrings, attemptID: attemptID, baselineRevision: baseline, sentConnection: identity["connection_nonce"] as? String)
             }
             return (true, .ok(["request_id": requestID, "patch_digest": patchDigest, "state": "pending",
                               "client_identity": identity, "engine_instance_nonce": instanceNonce]))
@@ -194,11 +198,80 @@ enum PreparedDeliveryEngine {
               let (_, metadata) = InjectionServer.preparedTarget(),
               let identity = metadata["identity"] as? [String: Any],
               let processNonce = identity["process_nonce"] as? String else { return .fail("PREPARED_CLIENT_UNAVAILABLE") }
+        recoverReceipt(params, requestID: requestID, digest: patchDigest, processNonce: processNonce,
+                       identity: identity)
         guard let value = receipt(requestID: requestID, digest: patchDigest, processNonce: processNonce) else {
             return .ok(["state": "unknown", "request_id": requestID, "patch_digest": patchDigest,
                         "client_identity": identity, "engine_instance_nonce": instanceNonce])
         }
         return .ok(value)
+    }
+
+    /// Uses the existing helper query turn. No timer, image transfer, load, or
+    /// retry admission; the phone may only return an already admitted receipt.
+    private static func recoverReceipt(_ params: [String: Any], requestID: String, digest: String,
+                                       processNonce: String, identity: [String: Any]) {
+        guard let (client, metadata) = InjectionServer.preparedTarget(),
+              let current = metadata["identity"] as? [String: Any],
+              let capabilities = metadata["capabilities"] as? [String],
+              capabilities.contains("prepared-receipt-query-v1"),
+              let connection = current["connection_nonce"] as? String, !connection.isEmpty,
+              ["bundle_id", "build_number", "executable_uuid", "debug_dylib_uuid", "process_nonce"].allSatisfy({
+                  identity[$0] as? String == current[$0] as? String
+              }) else { return }
+        let key = processNonce + ":" + requestID
+        let json: String? = queue.sync {
+            var value = receipts[key]
+            if value == nil {
+                // A restarted engine can reconstruct lookup authority, never a
+                // mutation, from the durable helper's exact original contract.
+                guard receipts.count < 1_024,
+                      let expected = params["expected_identity"] as? [String: Any],
+                      let attempt = params["attempt_id"] as? String, !attempt.isEmpty, attempt.utf8.count <= 128,
+                      let baseline = PreparedReplacementProof.integer(params["baseline_revision"]), baseline >= 0,
+                      let proof = try? PreparedReplacementProof.parse(params["replacement_proof"]),
+                      let strategy = params["refresh_strategy"] as? String,
+                      ["remount", "preserve-state-v1"].contains(strategy) else { return nil }
+                var strings: [String: String] = [:]
+                for name in ["bundle_id", "build_number", "executable_uuid", "debug_dylib_uuid", "process_nonce"] {
+                    guard let text = expected[name] as? String, !text.isEmpty,
+                          text == current[name] as? String else { return nil }
+                    strings[name] = text
+                }
+                value = Receipt(digest: digest, processNonce: processNonce, coverageDigest: proof.digest,
+                                proof: proof, refreshStrategy: strategy, expectedIdentity: strings,
+                                attemptID: attempt, baselineRevision: baseline)
+            }
+            guard var receipt = value, receipt.digest == digest, receipt.report == nil,
+                  let proof = receipt.proof, !receipt.queriedConnections.contains(connection), receipt.queriedConnections.count < 16,
+                  receipt.expectedIdentity.allSatisfy({ current[$0.key] as? String == $0.value }),
+                  receipt.sentConnection != connection else { return nil }
+            if params["attempt_id"] != nil || params["replacement_proof"] != nil || params["expected_identity"] != nil {
+                guard params["attempt_id"] as? String == receipt.attemptID,
+                      PreparedReplacementProof.integer(params["baseline_revision"]) == receipt.baselineRevision,
+                      params["refresh_strategy"] as? String == receipt.refreshStrategy,
+                      let supplied = try? PreparedReplacementProof.parse(params["replacement_proof"]),
+                      supplied.digest == receipt.coverageDigest,
+                      let expected = params["expected_identity"] as? [String: Any],
+                      receipt.expectedIdentity.allSatisfy({ expected[$0.key] as? String == $0.value }) else { return nil }
+            }
+            let request: [String: Any] = ["request_id": requestID, "patch_digest": digest,
+                "attempt_id": receipt.attemptID, "baseline_revision": receipt.baselineRevision,
+                "expected_identity": receipt.expectedIdentity, "replacement_proof": proof.object,
+                "refresh_strategy": receipt.refreshStrategy, "connection_nonce": connection]
+            let envelope: [String: Any] = ["notification_name": "SWIFT_SIM_PREPARED_RECEIPT_QUERY", "request": request]
+            guard let data = try? JSONSerialization.data(withJSONObject: envelope), data.count <= 16_384,
+                  let json = String(data: data, encoding: .utf8) else { return nil }
+            receipt.queriedConnections.insert(connection)
+            receipts[key] = receipt
+            return json
+        }
+        if let json {
+            InjectionServer.clientQueue.async {
+                _ = client.writePrepared(command: InjectionCommand.metrics.rawValue,
+                                         metadata: json, data: Data(), timeout: 0.3)
+            }
+        }
     }
 
     private static func receipt(requestID: String, digest: String, processNonce: String) -> [String: Any]? {

@@ -14,7 +14,7 @@ class ControlServer {
         static func fail(_ error: String) -> ActionResult { ActionResult(success: false, data: nil, error: error) }
     }
 }
-enum InjectionCommand: Int { case preparedInject = 11 }
+enum InjectionCommand: Int { case metrics = 5, preparedInject = 11 }
 final class InjectionServer {
     static let clientQueue = DispatchQueue(label: "FixtureWriter")
     static let client = InjectionServer()
@@ -92,6 +92,7 @@ struct PreparedEngineTests {
         PreparedDeliveryEngine.record(noEffect, from: InjectionServer.client)
         require(PreparedDeliveryEngine.query(["request_id": retryID, "patch_digest": digest]).data?["state"] as? String == "pending", "stale attempt cannot reopen new apply")
         try testV3(path: path, digest: digest, identity: identity)
+        try testReceiptRecovery(path: path, digest: digest, original: identity)
         require(!PreparedDeliveryEngine.prepare(["path": root + "/../outside.dylib"]).success, "artifact cannot escape owned root")
         try FileManager.default.createSymbolicLink(atPath: root + "/link.dylib", withDestinationPath: path)
         require(!PreparedDeliveryEngine.prepare(["path": root + "/link.dylib"]).success, "artifact symlink rejected")
@@ -181,9 +182,10 @@ struct PreparedEngineTests {
             PreparedDeliveryEngine.record(tampered, from: InjectionServer.client)
             require(query(request)["state"] as? String == "pending", "report identity bound: " + key)
         }
-        PreparedDeliveryEngine.record(success(request), from: InjectionServer.client)
+        var newest = success(request); newest["root_revision"] = 2
+        PreparedDeliveryEngine.record(newest, from: InjectionServer.client)
         require(query(request)["state"] as? String == "completed", "exact v3 proof completes")
-        var developerIdentity = identity; developerIdentity["root_revision"] = 1
+        var developerIdentity = identity; developerIdentity["root_revision"] = 2
         require(PreparedDeliveryEngine.lastDeveloperDelivery(for: identity) == nil, "developer context cannot borrow a newer revision than observed")
         let developerReceipt = PreparedDeliveryEngine.lastDeveloperDelivery(for: developerIdentity)
         require(developerReceipt?["request_id"] as? String == request["request_id"] as? String,
@@ -212,6 +214,71 @@ struct PreparedEngineTests {
         PreparedDeliveryEngine.record(noEffect(retry), from: InjectionServer.client)
         require(query(retry)["state"] as? String == "pending", "stale retry result cannot resolve new owner")
         print("Prepared v3 engine checks passed (including 32-way retry race)")
+    }
+
+    static func testReceiptRecovery(path: String, digest: String, original: [String: Any]) throws {
+        var identity = original; identity["connection_nonce"] = "first-recovery-connection"
+        let contract: [String: Any] = ["version": 3, "swift_replacements": 1, "objc_callbacks": []]
+        let proof = try PreparedReplacementProof.parse(contract)!
+        let caps = PreparedDeliveryEngine.capabilities + ["replacement-proof-v3", "state-preserving-refresh-v1", "prepared-receipt-query-v1"]
+        func request() -> [String: Any] { ["request_id": UUID().uuidString, "patch_digest": digest, "path": path,
+            "expires_at_ms": Date().timeIntervalSince1970 * 1_000 + 300_000, "baseline_revision": 0,
+            "attempt_id": "recovery-attempt", "expected_identity": identity, "replacement_proof": contract,
+            "refresh_strategy": "preserve-state-v1"] }
+        InjectionServer.metadata = ["identity": identity, "capabilities": caps]
+        let value = request(); require(PreparedDeliveryEngine.inject(value).success, "recovery fixture admitted")
+        InjectionServer.clientQueue.sync {}; let before = InjectionServer.commands
+        _ = PreparedDeliveryEngine.query(value); InjectionServer.clientQueue.sync {}
+        require(InjectionServer.commands == before, "ordinary send connection adds no query write")
+        var current = identity; current["connection_nonce"] = "second-recovery-connection"; current["root_revision"] = 1
+        InjectionServer.metadata = ["identity": current, "capabilities": caps]
+        for mutation: [String: Any] in [["attempt_id": "wrong"], ["baseline_revision": 7], ["refresh_strategy": "remount"],
+            ["replacement_proof": ["version": 3, "swift_replacements": 2, "objc_callbacks": []]], ["expected_identity": ["process_nonce": "wrong"]]] {
+            var invalid = value; mutation.forEach { invalid[$0.key] = $0.value }
+            _ = PreparedDeliveryEngine.query(invalid)
+        }
+        InjectionServer.clientQueue.sync {}
+        require(InjectionServer.commands == before, "conflicting lookup cannot consume valid connection recovery")
+        DispatchQueue.concurrentPerform(iterations: 32) { _ in _ = PreparedDeliveryEngine.query(value) }
+        InjectionServer.clientQueue.sync {}
+        require(InjectionServer.commands == before + 1 && InjectionServer.lastBytes.isEmpty, "32 concurrent queries send one empty-data lookup on reconnect")
+        let envelope = try JSONSerialization.jsonObject(with: Data(InjectionServer.lastMetadata.utf8)) as! [String: Any]
+        require(envelope["notification_name"] as? String == "SWIFT_SIM_PREPARED_RECEIPT_QUERY", "lookup uses bounded existing control frame")
+        let lookup = envelope["request"] as! [String: Any]
+        require(lookup["attempt_id"] as? String == "recovery-attempt" && lookup["connection_nonce"] as? String == "second-recovery-connection", "lookup binds exact operation and current socket")
+        current["connection_nonce"] = "third-recovery-connection"
+        InjectionServer.metadata = ["identity": current, "capabilities": caps]
+        _ = PreparedDeliveryEngine.query(value); InjectionServer.clientQueue.sync {}
+        require(InjectionServer.commands == before + 2, "second replacement socket has one lookup")
+        current["connection_nonce"] = "second-recovery-connection"
+        InjectionServer.metadata = ["identity": current, "capabilities": caps]
+        _ = PreparedDeliveryEngine.query(value); InjectionServer.clientQueue.sync {}
+        require(InjectionServer.commands == before + 2, "socket observation oscillation cannot resend an earlier lookup")
+        var report: [String: Any] = ["request_id": value["request_id"]!, "patch_digest": digest, "attempt_id": "recovery-attempt",
+            "client_identity": identity, "replacement_proof_version": 3, "coverage_digest": proof.digest,
+            "expected_swift_replacements": 1, "dynamic_replacements": 1, "objc_replacements": 0,
+            "represented_replacements": 1, "objc_callback_proofs": [], "complete_replacement_coverage": true,
+            "succeeded": true, "applied": true, "refresh_acknowledged": true, "root_revision": 1,
+            "refresh_strategy": "preserve-state-v1", "admission": "applied"]
+        PreparedDeliveryEngine.record(report, from: InjectionServer.client)
+        require(PreparedDeliveryEngine.query(value).data?["state"] as? String == "completed", "old-socket cached native report completes same process operation")
+        InjectionServer.clientQueue.sync {}; require(InjectionServer.commands == before + 2, "completed queries never send again")
+        let miss = request(); var readOnly = miss; readOnly.removeValue(forKey: "path"); readOnly.removeValue(forKey: "expires_at_ms")
+        _ = PreparedDeliveryEngine.query(readOnly); InjectionServer.clientQueue.sync {}
+        require(InjectionServer.commands == before + 3 && InjectionServer.lastBytes.isEmpty, "engine-cache miss reconstructs only lookup, no image bytes")
+        var missing = request(); missing.removeValue(forKey: "replacement_proof")
+        _ = PreparedDeliveryEngine.query(missing); InjectionServer.clientQueue.sync {}
+        require(InjectionServer.commands == before + 3, "cache miss requires full v3 authority")
+        current["connection_nonce"] = "third-recovery-connection"
+        InjectionServer.metadata = ["identity": current, "capabilities": PreparedDeliveryEngine.capabilities + ["replacement-proof-v3"]]
+        _ = PreparedDeliveryEngine.query(readOnly); InjectionServer.clientQueue.sync {}
+        require(InjectionServer.commands == before + 3, "old native clients never receive lookup control frame")
+        current["process_nonce"] = "another-process"
+        InjectionServer.metadata = ["identity": current, "capabilities": caps]
+        _ = PreparedDeliveryEngine.query(readOnly); InjectionServer.clientQueue.sync {}
+        require(InjectionServer.commands == before + 3, "prior process contract cannot reconstruct a lookup")
+        report["root_revision"] = 2; PreparedDeliveryEngine.record(report, from: InjectionServer.client)
+        print("Prepared receipt recovery checks passed: bounded same-operation lookups, no retransmission")
     }
 
 }

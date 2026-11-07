@@ -89,6 +89,20 @@ extern "C" void RunSocketFrameTests(void) {
         [socket disconnect]; [reader disconnect];
 
         socket = fixture(&writer);
+        reader = [[SimpleSocket alloc] initSocket:writer];
+        dispatch_semaphore_t queried = dispatch_semaphore_create(0);
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+            check([reader readInt] == 5);
+            check([[reader readStringWithMaxLength:16384] isEqualToString:@"{\"query\":true}"]);
+            NSData *empty = [reader readDataWithMaxLength:0];
+            check(empty != nil && empty.length == 0);
+            dispatch_semaphore_signal(queried);
+        });
+        check([socket writePreparedCommand:5 metadata:@"{\"query\":true}" data:[NSData data] timeout:.3]);
+        check(dispatch_semaphore_wait(queried, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)) == 0);
+        [socket disconnect]; [reader disconnect];
+
+        socket = fixture(&writer);
         int smallBuffer = 4096;
         setsockopt(writer, SOL_SOCKET, SO_RCVBUF, &smallBuffer, sizeof smallBuffer);
         NSData *large = [NSMutableData dataWithLength:4 * 1024 * 1024];

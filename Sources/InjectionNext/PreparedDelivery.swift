@@ -6,7 +6,7 @@ import CryptoKit
 /// replacement variable and may also emit a `TI` implementation variable. The
 /// linker can dead-strip the unused TI while retaining the active replacement.
 enum PreparedPatchEvidence {
-    static let clientCapabilities = ["prepared-delivery-v1", "reconnect-v1", "receipt-v1", "replacement-proof-v2", "replacement-proof-v3", "developer-context-v1", "developer-inspection-v1", "state-preserving-refresh-v1", "stateful-components-v1", "added-state-slots-v1"]
+    static let clientCapabilities = ["prepared-delivery-v1", "reconnect-v1", "receipt-v1", "replacement-proof-v2", "replacement-proof-v3", "developer-context-v1", "developer-inspection-v1", "state-preserving-refresh-v1", "stateful-components-v1", "added-state-slots-v1", "prepared-receipt-query-v1"]
 
     static func dynamicReplacementCount(in image: ImageSymbols) -> Int {
         // Original dynamically replaceable declarations have a Tx key as well
@@ -198,6 +198,40 @@ final class PreparedDeliveryLedger {
         entries[requestID] = Entry(digest: digest, coverageDigest: coverageDigest, attemptID: attemptID, baselineRevision: baseline, expectedIdentity: expected.compactMapValues { $0 as? String }.filter { ["bundle_id", "build_number", "executable_uuid", "debug_dylib_uuid", "process_nonce"].contains($0.key) }, refreshStrategy: refreshStrategy, callbacks: [deliver])
         lock.unlock()
         feedback?.begin(request)
+        return true
+    }
+
+    /// Receipt lookup only: never grants an owner or creates a ledger entry.
+    /// An admitted in-flight operation may attach one bounded completion callback.
+    /// Missing/conflicting entries are not evidence that retrying a load is safe.
+    @discardableResult
+    func recoverReceipt(request: [String: Any], identity: [String: Any],
+                        deliver: @escaping ([String: Any]) -> Void) -> Bool {
+        guard let requestID = request["request_id"] as? String, UUID(uuidString: requestID) != nil,
+              let digest = request["patch_digest"] as? String, digest.count == 64,
+              digest.allSatisfy({ $0.isHexDigit && !$0.isUppercase }),
+              let expected = request["expected_identity"] as? [String: Any],
+              let attemptID = request["attempt_id"] as? String, !attemptID.isEmpty,
+              attemptID.utf8.count <= 128,
+              let baseline = PreparedReplacementProof.integer(request["baseline_revision"]), baseline >= 0,
+              let connection = request["connection_nonce"] as? String, !connection.isEmpty,
+              connection == identity["connection_nonce"] as? String else { return false }
+        let proof: PreparedReplacementProof?
+        do { proof = try PreparedReplacementProof.parse(request["replacement_proof"]) }
+        catch { return false }
+        guard proof != nil else { return false } // recovery requires exact v3 coverage
+        let strategy = request["refresh_strategy"] as? String ?? "remount"
+        lock.lock()
+        guard var entry = entries[requestID], entry.digest == digest,
+              entry.coverageDigest == proof?.digest, entry.attemptID == attemptID,
+              entry.baselineRevision == baseline, entry.refreshStrategy == strategy,
+              entry.expectedIdentity.allSatisfy({ expected[$0.key] as? String == $0.value
+                  && identity[$0.key] as? String == $0.value }) else { lock.unlock(); return false }
+        if let report = entry.report { lock.unlock(); deliver(report); return true }
+        guard entry.callbacks.count < 16 else { lock.unlock(); return false }
+        entry.callbacks.append(deliver)
+        entries[requestID] = entry
+        lock.unlock()
         return true
     }
 

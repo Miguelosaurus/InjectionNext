@@ -740,6 +740,16 @@ open class InjectionNext: SimpleSocket {
                 if let data = metricsJSON.data(using: .utf8),
                    let metricsDict = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
                    let notificationName = metricsDict["notification_name"] as? String {
+                    if notificationName == "SWIFT_SIM_PREPARED_RECEIPT_QUERY" {
+                        guard let empty = readData(maxLength: 0), empty.isEmpty else { return }
+                        if let request = metricsDict["request"] as? [String: Any] {
+                            PreparedDeliveryLedger.shared.recoverReceipt(request: request,
+                                identity: clientIdentity(), deliver: { [weak self] report in
+                                    self?.sendPreparedReport(report)
+                                })
+                        }
+                        continue
+                    }
                     if notificationName == "SWIFT_SIM_ENGINE_CAPABILITIES",
                        metricsDict["prepared_delivery_protocol"] as? Int == 1 {
                         developerLock.lock()
