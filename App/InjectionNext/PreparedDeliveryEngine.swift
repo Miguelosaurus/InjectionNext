@@ -185,7 +185,8 @@ enum PreparedDeliveryEngine {
                       PreparedReplacementProof.boolean(report["applied"]) == false,
                       PreparedReplacementProof.boolean(report["refresh_acknowledged"]) == false,
                       report["state_uncertain"] == nil || PreparedReplacementProof.boolean(report["state_uncertain"]) == false,
-                      ["PREPARED_WAITING_FOR_FOREGROUND", "PREPARED_BASELINE_MISMATCH"].contains(report["error_code"] as? String ?? "") else { return }
+                      ["PREPARED_WAITING_FOR_FOREGROUND", "PREPARED_BASELINE_MISMATCH", "PREPARED_ATTEMPT_FENCED"].contains(report["error_code"] as? String ?? ""),
+                      report["error_code"] as? String != "PREPARED_ATTEMPT_FENCED" || PreparedReplacementProof.boolean(report["attempt_fenced"]) == true else { return }
             }
             receipt.report = report
             receipts[key] = receipt
@@ -208,7 +209,7 @@ enum PreparedDeliveryEngine {
     }
 
     /// Uses the existing helper query turn. No timer, image transfer, load, or
-    /// retry admission; the phone may only return an already admitted receipt.
+    /// retry admission; negotiated fencing may only retire an unadmitted attempt.
     private static func recoverReceipt(_ params: [String: Any], requestID: String, digest: String,
                                        processNonce: String, identity: [String: Any]) {
         guard let (client, metadata) = InjectionServer.preparedTarget(),
@@ -219,6 +220,8 @@ enum PreparedDeliveryEngine {
               ["bundle_id", "build_number", "executable_uuid", "debug_dylib_uuid", "process_nonce"].allSatisfy({
                   identity[$0] as? String == current[$0] as? String
               }) else { return }
+        let fence = PreparedReplacementProof.boolean(params["fence_unadmitted"]) == true && capabilities.contains("prepared-receipt-fence-v1")
+        let queryKey = connection + (fence ? ":fence" : ":read")
         let key = processNonce + ":" + requestID
         let json: String? = queue.sync {
             var value = receipts[key]
@@ -243,9 +246,9 @@ enum PreparedDeliveryEngine {
                                 attemptID: attempt, baselineRevision: baseline)
             }
             guard var receipt = value, receipt.digest == digest, receipt.report == nil,
-                  let proof = receipt.proof, !receipt.queriedConnections.contains(connection), receipt.queriedConnections.count < 16,
+                  let proof = receipt.proof, !receipt.queriedConnections.contains(queryKey), receipt.queriedConnections.count < 16,
                   receipt.expectedIdentity.allSatisfy({ current[$0.key] as? String == $0.value }),
-                  receipt.sentConnection != connection else { return nil }
+                  (fence || receipt.sentConnection != connection) else { return nil }
             if params["attempt_id"] != nil || params["replacement_proof"] != nil || params["expected_identity"] != nil {
                 guard params["attempt_id"] as? String == receipt.attemptID,
                       PreparedReplacementProof.integer(params["baseline_revision"]) == receipt.baselineRevision,
@@ -255,14 +258,15 @@ enum PreparedDeliveryEngine {
                       let expected = params["expected_identity"] as? [String: Any],
                       receipt.expectedIdentity.allSatisfy({ expected[$0.key] as? String == $0.value }) else { return nil }
             }
-            let request: [String: Any] = ["request_id": requestID, "patch_digest": digest,
+            var request: [String: Any] = ["request_id": requestID, "patch_digest": digest,
                 "attempt_id": receipt.attemptID, "baseline_revision": receipt.baselineRevision,
                 "expected_identity": receipt.expectedIdentity, "replacement_proof": proof.object,
                 "refresh_strategy": receipt.refreshStrategy, "connection_nonce": connection]
+            if fence { request["fence_unadmitted"] = true }
             let envelope: [String: Any] = ["notification_name": "SWIFT_SIM_PREPARED_RECEIPT_QUERY", "request": request]
             guard let data = try? JSONSerialization.data(withJSONObject: envelope), data.count <= 16_384,
                   let json = String(data: data, encoding: .utf8) else { return nil }
-            receipt.queriedConnections.insert(connection)
+            receipt.queriedConnections.insert(queryKey)
             receipts[key] = receipt
             return json
         }

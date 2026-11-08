@@ -93,6 +93,7 @@ struct PreparedEngineTests {
         require(PreparedDeliveryEngine.query(["request_id": retryID, "patch_digest": digest]).data?["state"] as? String == "pending", "stale attempt cannot reopen new apply")
         try testV3(path: path, digest: digest, identity: identity)
         try testReceiptRecovery(path: path, digest: digest, original: identity)
+        try testReceiptFence(path: path, digest: digest, original: identity)
         require(!PreparedDeliveryEngine.prepare(["path": root + "/../outside.dylib"]).success, "artifact cannot escape owned root")
         try FileManager.default.createSymbolicLink(atPath: root + "/link.dylib", withDestinationPath: path)
         require(!PreparedDeliveryEngine.prepare(["path": root + "/link.dylib"]).success, "artifact symlink rejected")
@@ -279,6 +280,55 @@ struct PreparedEngineTests {
         require(InjectionServer.commands == before + 3, "prior process contract cannot reconstruct a lookup")
         report["root_revision"] = 2; PreparedDeliveryEngine.record(report, from: InjectionServer.client)
         print("Prepared receipt recovery checks passed: bounded same-operation lookups, no retransmission")
+    }
+
+    static func testReceiptFence(path: String, digest: String, original: [String: Any]) throws {
+        var identity = original; identity["connection_nonce"] = "fence-connection"
+        let contract: [String: Any] = ["version": 3, "swift_replacements": 1, "objc_callbacks": []]
+        let proof = try PreparedReplacementProof.parse(contract)!
+        let caps = PreparedDeliveryEngine.capabilities + ["replacement-proof-v3", "state-preserving-refresh-v1", "prepared-receipt-query-v1", "prepared-receipt-fence-v1"]
+        InjectionServer.metadata = ["identity": identity, "capabilities": caps]
+        var request: [String: Any] = ["request_id": UUID().uuidString, "patch_digest": digest, "path": path,
+            "expires_at_ms": Date().timeIntervalSince1970 * 1_000 + 300_000, "baseline_revision": 0,
+            "attempt_id": "fenced-old", "expected_identity": identity, "replacement_proof": contract,
+            "refresh_strategy": "preserve-state-v1", "fence_unadmitted": true]
+        InjectionServer.clientQueue.sync {}; let before = InjectionServer.commands
+        _ = PreparedDeliveryEngine.query(request); InjectionServer.clientQueue.sync {}
+        require(InjectionServer.commands == before + 1 && InjectionServer.lastBytes.isEmpty, "cache-miss fence sends no image")
+        let envelope = try JSONSerialization.jsonObject(with: Data(InjectionServer.lastMetadata.utf8)) as! [String: Any]
+        require((envelope["request"] as? [String: Any])?["fence_unadmitted"] as? Bool == true, "negotiated fence flag reaches native ledger")
+        var report: [String: Any] = ["request_id": request["request_id"]!, "patch_digest": digest, "attempt_id": "fenced-old",
+            "client_identity": identity, "replacement_proof_version": 3, "coverage_digest": proof.digest,
+            "succeeded": false, "applied": false, "refresh_acknowledged": false,
+            "admission": "rejected-no-effect", "error_code": "PREPARED_ATTEMPT_FENCED"]
+        PreparedDeliveryEngine.record(report, from: InjectionServer.client)
+        require(PreparedDeliveryEngine.query(request).data?["state"] as? String == "pending", "missing explicit native fence marker is not authority")
+        report["attempt_fenced"] = true
+        PreparedDeliveryEngine.record(report, from: InjectionServer.client)
+        require(PreparedDeliveryEngine.query(request).data?["state"] as? String == "rejected-no-effect", "exact fence report becomes retry authority")
+        require(PreparedDeliveryEngine.inject(request).data?["state"] as? String == "rejected-no-effect", "same retired attempt cannot send an image")
+        InjectionServer.clientQueue.sync {}; require(InjectionServer.commands == before + 1, "cached fence has zero retransmissions")
+        request["attempt_id"] = "safe-new"
+        require(PreparedDeliveryEngine.inject(request).success, "new attempt after native fence may send")
+        InjectionServer.clientQueue.sync {}; require(InjectionServer.commands == before + 2 && !InjectionServer.lastBytes.isEmpty, "one actual new image handoff")
+        PreparedDeliveryEngine.record(report, from: InjectionServer.client)
+        request.removeValue(forKey: "fence_unadmitted")
+        require(PreparedDeliveryEngine.query(request).data?["state"] as? String == "pending", "late old no-effect report cannot resolve new attempt")
+        report["attempt_id"] = "safe-new"; report["applied"] = true; report["succeeded"] = true
+        report["refresh_acknowledged"] = true; report["root_revision"] = 1; report["admission"] = "applied"
+        report["dynamic_replacements"] = 1; report["expected_swift_replacements"] = 1
+        report["objc_replacements"] = 0; report["represented_replacements"] = 1
+        report["objc_callback_proofs"] = []; report["complete_replacement_coverage"] = true
+        report["refresh_strategy"] = "preserve-state-v1"; report.removeValue(forKey: "attempt_fenced")
+        report.removeValue(forKey: "error_code")
+        PreparedDeliveryEngine.record(report, from: InjectionServer.client)
+        require(PreparedDeliveryEngine.query(request).data?["state"] as? String == "completed", "only new admitted attempt completes")
+        InjectionServer.metadata = ["identity": identity, "capabilities": caps.filter { $0 != "prepared-receipt-fence-v1" }]
+        request["request_id"] = UUID().uuidString; request["fence_unadmitted"] = true
+        _ = PreparedDeliveryEngine.query(request); InjectionServer.clientQueue.sync {}
+        let legacy = try JSONSerialization.jsonObject(with: Data(InjectionServer.lastMetadata.utf8)) as! [String: Any]
+        require((legacy["request"] as? [String: Any])?["fence_unadmitted"] == nil, "old native clients retain read-only query")
+        print("Prepared receipt fence engine checks passed: no image before proof, stale replies fenced, one safe new handoff")
     }
 
 }

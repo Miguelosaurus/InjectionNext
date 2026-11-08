@@ -349,6 +349,7 @@ class ControlServer {
             result["engine_instance_nonce"] = PreparedDeliveryEngine.instanceNonce
             result["prepared_delivery_protocol"] = 1
             result["prepared_receipt_recovery_protocol"] = 1
+            result["prepared_receipt_fence_protocol"] = 1
             result["state_preserving_refresh_protocol"] = 1
             result["prepared_replacement_proof_protocol"] = PreparedDeliveryEngine.replacementProofProtocol
             result["compilation_registration_protocol"] = 1

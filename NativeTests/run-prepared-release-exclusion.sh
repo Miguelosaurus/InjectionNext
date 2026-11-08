@@ -17,7 +17,7 @@ for name in ['PreparedReplacementProof', 'PreparedDelivery', 'InjectionNext', 'D
     for forbidden in ['PreparedReplacementProof', 'PreparedDeliveryLedger', 'SwiftSimPreparedIMPAddress', 'DeveloperInstallIntent']:
         assert forbidden not in symbols, f'Release includes active prepared symbol: {forbidden}'
     # DWARF contains source filenames even when the entire file is compiled out.
-    for forbidden in ['replacement-proof-v3', 'PREPARED_OBJC_PREFLIGHT_FAILED', 'objc_callback_proofs', 'foreground-install-v1', 'DEVELOPER_INSTALL_INVALID', 'download-manifest']:
+    for forbidden in ['replacement-proof-v3', 'PREPARED_OBJC_PREFLIGHT_FAILED', 'objc_callback_proofs', 'foreground-install-v1', 'DEVELOPER_INSTALL_INVALID', 'download-manifest', 'prepared-receipt-fence-v1', 'PREPARED_ATTEMPT_FENCED']:
         assert forbidden not in literals, f'Release includes active prepared literal: {forbidden}'
 print('Release SDK objects exclude native v3 proof, ledger, callback runtime and wire literals')
 PY

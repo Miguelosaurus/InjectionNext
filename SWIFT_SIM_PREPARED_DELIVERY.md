@@ -114,3 +114,29 @@ unstripped replacement dylibs, observes the function change, and verifies that
 ordinary loaded code provides no replacement evidence. This reproduces the
 TI-only reporting failure without relying on fabricated symbol names.
 These fixtures do not establish physical iPhone acceptance.
+
+
+## Negotiated missing-attempt recovery
+
+`prepared-receipt-fence-v1` is an optional Debug capability. The engine also
+advertises `prepared_receipt_fence_protocol: 1`. Only an authenticated exact
+`prepared_receipt` recovery query with Boolean `fence_unadmitted: true` requests
+fencing. Ordinary receipt reads and old clients remain read-only. No normal
+successful edit adds a query or timer.
+
+If the native ledger already admitted that request/attempt, it returns the cached
+receipt or attaches a bounded completion callback. It cannot cancel an admitted
+load. If no attempt was admitted, matching binary/process/connection, coverage,
+strategy, baseline and active/root-ready identity are required. Under the same
+ledger lock used by admission, it records a permanent tombstone before returning
+`PREPARED_ATTEMPT_FENCED`, `admission: rejected-no-effect`, `attempt_fenced: true`.
+This proves more than absence: all late payloads of that old attempt are refused
+before load, including after a new attempt has started or completed.
+
+The helper may then release only its exact current uncertainty and reuse the
+same immutable request/image with a new attempt token. Native retired IDs remain
+in that request's existing entry, bounded to 16. The existing 1024-entry ledger
+never evicts accepted or fenced ownership; capacity/conflicts fail closed. Lost
+negative replies can be queried again on a replacement connection. Missing
+receipts without this negotiated proof never authorize replay. Native state,
+root revision, UI feedback and image loading are unchanged by fencing itself.

@@ -11,7 +11,7 @@ enum PreparedPatchEvidence {
     #else
     private static let foregroundInstallCapabilities: [String] = []
     #endif
-    static let clientCapabilities = ["prepared-delivery-v1", "reconnect-v1", "receipt-v1", "replacement-proof-v2", "replacement-proof-v3", "developer-context-v1", "developer-inspection-v1", "state-preserving-refresh-v1", "stateful-components-v1", "added-state-slots-v1", "prepared-receipt-query-v1"] + foregroundInstallCapabilities
+    static let clientCapabilities = ["prepared-delivery-v1", "reconnect-v1", "receipt-v1", "replacement-proof-v2", "replacement-proof-v3", "developer-context-v1", "developer-inspection-v1", "state-preserving-refresh-v1", "stateful-components-v1", "added-state-slots-v1", "prepared-receipt-query-v1", "prepared-receipt-fence-v1"] + foregroundInstallCapabilities
 
     static func dynamicReplacementCount(in image: ImageSymbols) -> Int {
         // Original dynamically replaceable declarations have a Tx key as well
@@ -132,6 +132,7 @@ final class PreparedDeliveryLedger {
         var refreshStrategy = "remount"
         var report: [String: Any]?
         var callbacks: [([String: Any]) -> Void]
+        var fencedAttempts: Set<String> = []
     }
     private let lock = NSLock()
     private var entries: [String: Entry] = [:]
@@ -185,30 +186,41 @@ final class PreparedDeliveryLedger {
               refreshStrategy != "preserve-state-v1" || proof != nil else { return reject("PREPARED_REFRESH_STRATEGY_INVALID") }
         let coverageDigest = proof?.digest ?? ""
         lock.lock()
+        var fencedAttempts: Set<String> = []
         if var entry = entries[requestID] {
             guard entry.digest == digest, entry.coverageDigest == coverageDigest, entry.refreshStrategy == refreshStrategy,
                   entry.expectedIdentity.allSatisfy({ expected[$0.key] as? String == $0.value }),
-                  proof == nil || (entry.attemptID == attemptID && entry.baselineRevision == baseline) else { lock.unlock(); return reject("PREPARED_REQUEST_CONFLICT") }
-            if let report = entry.report { lock.unlock(); deliver(report); return false }
-            guard entry.callbacks.count < 16 else { lock.unlock(); return reject("PREPARED_RECEIPT_BUSY") }
-            entry.callbacks.append(deliver)
-            entries[requestID] = entry
-            lock.unlock()
-            return false
+                  proof == nil || entry.baselineRevision == baseline else { lock.unlock(); return reject("PREPARED_REQUEST_CONFLICT") }
+            if entry.fencedAttempts.contains(attemptID) {
+                lock.unlock(); return reject("PREPARED_ATTEMPT_FENCED", noEffect: true)
+            }
+            if entry.fencedAttempts.contains(entry.attemptID) && entry.attemptID != attemptID {
+                // A new attempt can own this request only after the old one is
+                // permanently refused. Retain all retired IDs across retries.
+                fencedAttempts = entry.fencedAttempts
+            } else {
+                guard proof == nil || entry.attemptID == attemptID else { lock.unlock(); return reject("PREPARED_REQUEST_CONFLICT") }
+                if let report = entry.report { lock.unlock(); deliver(report); return false }
+                guard entry.callbacks.count < 16 else { lock.unlock(); return reject("PREPARED_RECEIPT_BUSY") }
+                entry.callbacks.append(deliver)
+                entries[requestID] = entry
+                lock.unlock()
+                return false
+            }
         }
         guard identity["is_active"] as? Bool == true,
               identity["root_ready"] as? Bool == true else { lock.unlock(); return reject("PREPARED_WAITING_FOR_FOREGROUND", noEffect: true) }
         guard PreparedReplacementProof.integer(identity["root_revision"]) == baseline else { lock.unlock(); return reject("PREPARED_BASELINE_MISMATCH", noEffect: true) }
-        guard entries.count < capacity else { lock.unlock(); return reject("PREPARED_RECEIPT_CAPACITY") }
-        entries[requestID] = Entry(digest: digest, coverageDigest: coverageDigest, attemptID: attemptID, baselineRevision: baseline, expectedIdentity: expected.compactMapValues { $0 as? String }.filter { ["bundle_id", "build_number", "executable_uuid", "debug_dylib_uuid", "process_nonce"].contains($0.key) }, refreshStrategy: refreshStrategy, callbacks: [deliver])
+        guard entries[requestID] != nil || entries.count < capacity else { lock.unlock(); return reject("PREPARED_RECEIPT_CAPACITY") }
+        entries[requestID] = Entry(digest: digest, coverageDigest: coverageDigest, attemptID: attemptID, baselineRevision: baseline, expectedIdentity: expected.compactMapValues { $0 as? String }.filter { ["bundle_id", "build_number", "executable_uuid", "debug_dylib_uuid", "process_nonce"].contains($0.key) }, refreshStrategy: refreshStrategy, callbacks: [deliver], fencedAttempts: fencedAttempts)
         lock.unlock()
         feedback?.begin(request)
         return true
     }
 
-    /// Receipt lookup only: never grants an owner or creates a ledger entry.
-    /// An admitted in-flight operation may attach one bounded completion callback.
-    /// Missing/conflicting entries are not evidence that retrying a load is safe.
+    /// Lookup never grants a load owner. Explicit negotiated recovery may fence
+    /// an absent attempt atomically; that attempt can never subsequently own a
+    /// load. Admitted operations keep their receipt/completion callback path.
     @discardableResult
     func recoverReceipt(request: [String: Any], identity: [String: Any],
                         deliver: @escaping ([String: Any]) -> Void) -> Bool {
@@ -226,12 +238,42 @@ final class PreparedDeliveryLedger {
         catch { return false }
         guard proof != nil else { return false } // recovery requires exact v3 coverage
         let strategy = request["refresh_strategy"] as? String ?? "remount"
+        guard ["remount", "preserve-state-v1"].contains(strategy),
+              ["bundle_id", "build_number", "executable_uuid", "debug_dylib_uuid", "process_nonce"].allSatisfy({
+                  guard let text = expected[$0] as? String, !text.isEmpty else { return false }
+                  return identity[$0] as? String == text
+              }) else { return false }
         lock.lock()
-        guard var entry = entries[requestID], entry.digest == digest,
-              entry.coverageDigest == proof?.digest, entry.attemptID == attemptID,
-              entry.baselineRevision == baseline, entry.refreshStrategy == strategy,
-              entry.expectedIdentity.allSatisfy({ expected[$0.key] as? String == $0.value
-                  && identity[$0.key] as? String == $0.value }) else { lock.unlock(); return false }
+        let previous = entries[requestID]
+        if let entry = previous {
+            guard entry.digest == digest, entry.coverageDigest == proof?.digest,
+                  entry.baselineRevision == baseline, entry.refreshStrategy == strategy,
+                  entry.expectedIdentity.allSatisfy({ expected[$0.key] as? String == $0.value }) else { lock.unlock(); return false }
+            if entry.fencedAttempts.contains(attemptID) {
+                lock.unlock()
+                deliver(Self.failure("PREPARED_ATTEMPT_FENCED", request: request, identity: identity, noEffect: true))
+                return true
+            }
+        }
+        let onlyFences = previous.map { $0.fencedAttempts.contains($0.attemptID) } ?? false
+        if (previous == nil || onlyFences), PreparedReplacementProof.boolean(request["fence_unadmitted"]) == true {
+            guard PreparedReplacementProof.boolean(identity["is_active"]) == true, PreparedReplacementProof.boolean(identity["root_ready"]) == true,
+                  PreparedReplacementProof.integer(identity["root_revision"]) == baseline,
+                  previous != nil || entries.count < capacity,
+                  (previous?.fencedAttempts.count ?? 0) < 16 else { lock.unlock(); return false }
+            var retired = previous?.fencedAttempts ?? []
+            retired.insert(attemptID)
+            let report = Self.failure("PREPARED_ATTEMPT_FENCED", request: request, identity: identity, noEffect: true)
+            let entry = Entry(digest: digest, coverageDigest: proof!.digest, attemptID: attemptID,
+                baselineRevision: baseline, expectedIdentity: expected.compactMapValues { $0 as? String }.filter {
+                    ["bundle_id", "build_number", "executable_uuid", "debug_dylib_uuid", "process_nonce"].contains($0.key)
+                }, refreshStrategy: strategy, report: report, callbacks: [], fencedAttempts: retired)
+            entries[requestID] = entry
+            lock.unlock()
+            deliver(report)
+            return true
+        }
+        guard var entry = previous, entry.attemptID == attemptID else { lock.unlock(); return false }
         if let report = entry.report { lock.unlock(); deliver(report); return true }
         guard entry.callbacks.count < 16 else { lock.unlock(); return false }
         entry.callbacks.append(deliver)
@@ -283,6 +325,7 @@ final class PreparedDeliveryLedger {
          "request_id": request["request_id"] as? String ?? "",
          "patch_digest": request["patch_digest"] as? String ?? "",
          "client_identity": identity]
+        if code == "PREPARED_ATTEMPT_FENCED" { result["attempt_fenced"] = true }
         result["attempt_id"] = request["attempt_id"] as? String ?? ""
         if let proof = try? PreparedReplacementProof.parse(request["replacement_proof"]) {
             result["replacement_proof_version"] = 3; result["coverage_digest"] = proof.digest
