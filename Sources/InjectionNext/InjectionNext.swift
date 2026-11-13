@@ -32,6 +32,7 @@ open class InjectionNext: SimpleSocket {
     private let developerLock = NSLock()
     private var developerReady = false
     private var developerSending = false
+    #if !os(iOS) && !os(tvOS) && !os(visionOS)
     private static let networkRecovery: Void = {
         let monitor = NWPathMonitor()
         let queue = DispatchQueue(label: "SwiftSimNetworkRecovery")
@@ -47,6 +48,7 @@ open class InjectionNext: SimpleSocket {
         networkMonitor = monitor
     }()
     private static var networkMonitor: NWPathMonitor?
+    #endif
 
     private func clientIdentity() -> [String: Any] {
         var identity = InjectionClientExecutionState() as? [String: Any] ?? [:]
@@ -124,10 +126,20 @@ open class InjectionNext: SimpleSocket {
 
     @objc var developerConnectionNonce: String { connectionNonce }
 
+    private static let developerToolValues: [String: Set<String>] = [
+        "appearance": ["app-default", "light", "dark"],
+        "text-size": ["app-default", "xs", "s", "m", "l", "xl", "xxl", "xxxl", "ax1", "ax2", "ax3", "ax4", "ax5"],
+        "layout-direction": ["app-default", "ltr", "rtl"]
+    ]
+
+    static func validDeveloperTool(_ tool: String, value: String?) -> Bool {
+        developerToolValues[tool]?.contains(value ?? "") ?? ["refresh", "inspect", "install"].contains(tool)
+    }
+
     private func developerTool(_ request: [String: Any]) {
         guard let id = request["operation_id"] as? String, UUID(uuidString: id) != nil,
-              let tool = request["tool"] as? String, ["appearance", "refresh", "inspect", "install"].contains(tool),
-              tool != "appearance" || ["app-default", "light", "dark"].contains(request["value"] as? String ?? "") else { return }
+              let tool = request["tool"] as? String,
+              Self.validDeveloperTool(tool, value: request["value"] as? String) else { return }
         if tool == "install" {
             guard let intent = DeveloperInstallIntent.parse(request["value"] as? String,
                     bundleID: Bundle.main.bundleIdentifier ?? ""), intent.buildID.lowercased() == id.lowercased(),
@@ -436,7 +448,9 @@ open class InjectionNext: SimpleSocket {
             detail("Bundle build #"+build)
         }
         #endif
+        #if !os(iOS) && !os(tvOS) && !os(visionOS)
         _ = Self.networkRecovery
+        #endif
         let stateObserver = NotificationCenter.default.addObserver(
             forName: Notification.Name("SWIFT_SIM_CLIENT_STATE_CHANGED"), object: nil, queue: nil
         ) { [weak self] _ in self?.sendClientIdentity() }

@@ -17,6 +17,7 @@ extern "C" {
 void InjectionWakeConnection(void);
 void InjectionSetExecutionActive(BOOL active);
 NSTimeInterval InjectionReconnectDelay(NSUInteger failureCount);
+NSUInteger InjectionReconnectFailures(NSUInteger failures, NSUInteger previousGeneration, NSUInteger currentGeneration);
 void InjectionSetRootReady(BOOL ready, NSUInteger revision);
 BOOL InjectionWaitForRootReady(NSTimeInterval expiresAt);
 NSDictionary * _Nonnull InjectionClientExecutionState(void);

@@ -11,7 +11,7 @@ enum PreparedPatchEvidence {
     #else
     private static let foregroundInstallCapabilities: [String] = []
     #endif
-    static let clientCapabilities = ["prepared-delivery-v1", "reconnect-v1", "receipt-v1", "replacement-proof-v2", "replacement-proof-v3", "developer-context-v1", "developer-inspection-v1", "state-preserving-refresh-v1", "stateful-components-v1", "added-state-slots-v1", "prepared-receipt-query-v1", "prepared-receipt-fence-v1"] + foregroundInstallCapabilities
+    static let clientCapabilities = ["prepared-delivery-v1", "reconnect-v1", "receipt-v1", "replacement-proof-v2", "replacement-proof-v3", "developer-context-v1", "developer-inspection-v1", "developer-environment-v1", "state-preserving-refresh-v1", "stateful-components-v1", "added-state-slots-v1", "prepared-receipt-query-v1", "prepared-receipt-fence-v1"] + foregroundInstallCapabilities
 
     static func dynamicReplacementCount(in image: ImageSymbols) -> Int {
         // Original dynamically replaceable declarations have a Tx key as well

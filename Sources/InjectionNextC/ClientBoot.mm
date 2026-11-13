@@ -10,6 +10,9 @@
 #import <objc/runtime.h>
 #import <mach-o/dyld.h>
 #import <mach-o/loader.h>
+#if TARGET_OS_IOS || TARGET_OS_TV || TARGET_OS_VISION
+#import <Network/Network.h>
+#endif
 
 #import "InjectionImplC.h"
 #import "InjectionClient.h"
@@ -44,6 +47,10 @@ static NSCondition *reconnectState(void) {
 
 extern "C" NSTimeInterval InjectionReconnectDelay(NSUInteger failureCount) {
     return MIN(16.0, 0.25 * (1UL << MIN(failureCount, (NSUInteger)6)));
+}
+
+extern "C" NSUInteger InjectionReconnectFailures(NSUInteger failures, NSUInteger previousGeneration, NSUInteger currentGeneration) {
+    return previousGeneration == currentGeneration ? failures : 0;
 }
 
 extern "C" void InjectionWakeConnection(void) {
@@ -187,6 +194,23 @@ extern "C" NSString *InjectionImageUUID(BOOL debugDylib) {
     #endif
     NSNotificationCenter *notifications = NSNotificationCenter.defaultCenter;
     #if TARGET_OS_IOS || TARGET_OS_TV || TARGET_OS_VISION
+    static dispatch_once_t monitorOnce;
+    static nw_path_monitor_t monitor;
+    dispatch_once(&monitorOnce, ^{
+        monitor = nw_path_monitor_create();
+        nw_path_monitor_set_queue(monitor, dispatch_queue_create("SwiftSimReconnectPath", DISPATCH_QUEUE_SERIAL));
+        nw_path_monitor_set_update_handler(monitor, ^(nw_path_t path) {
+            if (nw_path_get_status(path) != nw_path_status_satisfied) return;
+            NSCondition *condition = reconnectState();
+            [condition lock];
+            if (executionActive && !injectionClient) {
+                reconnectWakeGeneration++;
+                [condition broadcast];
+            }
+            [condition unlock];
+        });
+        nw_path_monitor_start(monitor);
+    });
     [notifications addObserverForName:@"UIApplicationDidBecomeActiveNotification"
         object:nil queue:nil usingBlock:^(NSNotification *note) { InjectionSetExecutionActive(YES); }];
     [notifications addObserverForName:@"UIApplicationDidEnterBackgroundNotification"
@@ -237,11 +261,14 @@ extern "C" NSString *InjectionImageUUID(BOOL debugDylib) {
     [condition unlock];
     const BOOL reconnectEnabled = getenv(INJECTION_HOST) || _insetting(@INJECTION_HOST);
     NSUInteger failures = 0;
+    NSUInteger failureGeneration = 0;
     do {
         @autoreleasepool {
             [condition lock];
             while (!executionActive) [condition wait];
             const NSUInteger attemptGeneration = reconnectWakeGeneration;
+            failures = InjectionReconnectFailures(failures, failureGeneration, attemptGeneration);
+            failureGeneration = attemptGeneration;
             [condition unlock];
             SimpleSocket *client = [clientClass connectTo:socketAddr timeout:3.0];
             if (client) {

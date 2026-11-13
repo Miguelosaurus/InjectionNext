@@ -605,10 +605,16 @@ class ControlServer {
         return .ok(result)
     }
 
+    private static let developerToolValues: [String: Set<String>] = [
+        "appearance": ["app-default", "light", "dark"],
+        "text-size": ["app-default", "xs", "s", "m", "l", "xl", "xxl", "xxxl", "ax1", "ax2", "ax3", "ax4", "ax5"],
+        "layout-direction": ["app-default", "ltr", "rtl"]
+    ]
+
     private func developerTool(_ params: [String: Any]) -> ActionResult {
         guard let operationID = params["operation_id"] as? String, UUID(uuidString: operationID) != nil,
-              let tool = params["tool"] as? String, ["appearance", "refresh", "inspect"].contains(tool),
-              tool != "appearance" || ["app-default", "light", "dark"].contains(params["value"] as? String ?? ""),
+              let tool = params["tool"] as? String,
+              Self.developerToolValues[tool]?.contains(params["value"] as? String ?? "") ?? ["refresh", "inspect"].contains(tool),
               ["bundle_id", "executable_uuid", "debug_dylib_uuid", "process_nonce", "connection_nonce"].allSatisfy({
                   guard let value = params[$0] as? String else { return false }; return !value.isEmpty && value.utf8.count <= 256
               }) else { return .fail("DEVELOPER_REQUEST_INVALID") }
@@ -626,7 +632,7 @@ class ControlServer {
         guard !PreparedDeliveryEngine.hasPending(for: identity) else { return .fail("DEVELOPER_BUSY") }
         if tool == "inspect", !capabilities.contains("developer-inspection-v1") { return .fail("DEVELOPER_CONTEXT_UNSUPPORTED") }
         var request: [String: Any] = ["operation_id": operationID.lowercased(), "tool": tool]
-        if tool == "appearance" { request["value"] = params["value"] }
+        if Self.developerToolValues[tool] != nil { request["value"] = params["value"] }
         let (result, error) = client.requestDeveloperTool(request, identity: identity)
         guard let result else { return .fail(error ?? "DEVELOPER_TOOL_UNCONFIRMED") }
         return .ok(["schema_version": 1, "identity": identity, "operation_id": operationID.lowercased(), "result": result])
