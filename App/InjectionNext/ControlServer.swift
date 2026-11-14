@@ -611,10 +611,17 @@ class ControlServer {
         "layout-direction": ["app-default", "ltr", "rtl"]
     ]
 
+    private static func validPreparing(_ value: String?) -> Bool {
+        guard let parts = value?.split(separator: ":"), parts.count == 3, UUID(uuidString: String(parts[0])) != nil,
+              parts[1].count <= 6, parts[2].count <= 9, Int(parts[1]) != nil, Int(parts[2]) != nil else { return false }
+        return true
+    }
+
     private func developerTool(_ params: [String: Any]) -> ActionResult {
         guard let operationID = params["operation_id"] as? String, UUID(uuidString: operationID) != nil,
               let tool = params["tool"] as? String,
-              Self.developerToolValues[tool]?.contains(params["value"] as? String ?? "") ?? ["refresh", "inspect"].contains(tool),
+              tool == "delivery-preparing" ? Self.validPreparing(params["value"] as? String)
+                : Self.developerToolValues[tool]?.contains(params["value"] as? String ?? "") ?? ["refresh", "inspect"].contains(tool),
               ["bundle_id", "executable_uuid", "debug_dylib_uuid", "process_nonce", "connection_nonce"].allSatisfy({
                   guard let value = params[$0] as? String else { return false }; return !value.isEmpty && value.utf8.count <= 256
               }) else { return .fail("DEVELOPER_REQUEST_INVALID") }
@@ -631,8 +638,9 @@ class ControlServer {
         }
         guard !PreparedDeliveryEngine.hasPending(for: identity) else { return .fail("DEVELOPER_BUSY") }
         if tool == "inspect", !capabilities.contains("developer-inspection-v1") { return .fail("DEVELOPER_CONTEXT_UNSUPPORTED") }
+        if tool == "delivery-preparing", !capabilities.contains("delivery-preparing-v1") { return .fail("DEVELOPER_CONTEXT_UNSUPPORTED") }
         var request: [String: Any] = ["operation_id": operationID.lowercased(), "tool": tool]
-        if Self.developerToolValues[tool] != nil { request["value"] = params["value"] }
+        if Self.developerToolValues[tool] != nil || tool == "delivery-preparing" { request["value"] = params["value"] }
         let (result, error) = client.requestDeveloperTool(request, identity: identity)
         guard let result else { return .fail(error ?? "DEVELOPER_TOOL_UNCONFIRMED") }
         return .ok(["schema_version": 1, "identity": identity, "operation_id": operationID.lowercased(), "result": result])

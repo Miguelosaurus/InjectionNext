@@ -35,6 +35,26 @@ final class PreparedDeliveryFeedbackTests: XCTestCase {
         XCTAssertEqual(receipts, 2)
     }
 
+    func testPreparingStartsPresentationThatAdmissionContinues() {
+        var events: [[String: Any]] = []
+        let feedback = PreparedDeliveryFeedback { events.append($0) }
+        let ledger = PreparedDeliveryLedger(feedback: feedback)
+        let identity = identity(); let request = request(identity)
+        let id = request["request_id"] as! String
+        feedback.preparing(requestID: id, estimateMs: 2_400, baseline: 4)
+        feedback.preparing(requestID: id, estimateMs: 2_400, baseline: 4)
+        XCTAssertEqual(events.count, 1, "A repeated signal does not restart presentation")
+        XCTAssertEqual(events[0]["phase"] as? String, "preparing")
+        XCTAssertEqual(events[0]["estimate_ms"] as? Int, 2_400)
+        XCTAssertEqual(events[0]["patch_digest"] as? String, String(repeating: "0", count: 64))
+        XCTAssertTrue(ledger.begin(request: request, data: bytes, identity: identity, now: 1_000) { _ in })
+        XCTAssertEqual(events.compactMap { $0["phase"] as? String }, ["preparing", "receiving"])
+        XCTAssertEqual(events.last?["patch_digest"] as? String, request["patch_digest"] as? String)
+        XCTAssertNil(DeliveryPreparing.parse("not-a-uuid:1:0"))
+        XCTAssertNil(DeliveryPreparing.parse("\(id):9999999:0"))
+        XCTAssertEqual(DeliveryPreparing.parse("\(id):1500:4")?.estimateMs, 1_500)
+    }
+
     func testForegroundRejectionProducesNoUpdateFailureOrSuccessBanner() {
         var events: [[String: Any]] = []
         let feedback = PreparedDeliveryFeedback { events.append($0) }

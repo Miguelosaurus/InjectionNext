@@ -11,7 +11,7 @@ enum PreparedPatchEvidence {
     #else
     private static let foregroundInstallCapabilities: [String] = []
     #endif
-    static let clientCapabilities = ["prepared-delivery-v1", "reconnect-v1", "receipt-v1", "replacement-proof-v2", "replacement-proof-v3", "developer-context-v1", "developer-inspection-v1", "developer-environment-v1", "state-preserving-refresh-v1", "stateful-components-v1", "added-state-slots-v1", "prepared-receipt-query-v1", "prepared-receipt-fence-v1"] + foregroundInstallCapabilities
+    static let clientCapabilities = ["delivery-preparing-v1", "prepared-delivery-v1", "reconnect-v1", "receipt-v1", "replacement-proof-v2", "replacement-proof-v3", "developer-context-v1", "developer-inspection-v1", "developer-environment-v1", "state-preserving-refresh-v1", "stateful-components-v1", "added-state-slots-v1", "prepared-receipt-query-v1", "prepared-receipt-fence-v1"] + foregroundInstallCapabilities
 
     static func dynamicReplacementCount(in image: ImageSymbols) -> Int {
         // Original dynamically replaceable declarations have a Tx key as well
@@ -58,6 +58,19 @@ final class PreparedDeliveryFeedback {
         lock.lock()
         active = Active(requestID: id, digest: digest, baseline: baseline, rank: 0)
         let event = eventLocked(phase: "receiving", rank: 0, request: request)
+        lock.unlock()
+        deliver(event)
+    }
+
+    /// The Mac started compiling this request. Presentation only: the glow can
+    /// begin before the patch exists; admission later supplies its digest.
+    func preparing(requestID: String, estimateMs: Int, baseline: Int) {
+        guard UUID(uuidString: requestID) != nil, (0...600_000).contains(estimateMs), baseline >= 0 else { return }
+        lock.lock()
+        if let current = active, current.requestID == requestID, current.rank < 3 { lock.unlock(); return }
+        active = Active(requestID: requestID, digest: String(repeating: "0", count: 64), baseline: baseline, rank: 0)
+        var event = eventLocked(phase: "preparing", rank: 0, request: ["request_id": requestID, "patch_digest": String(repeating: "0", count: 64)])
+        event?["estimate_ms"] = estimateMs
         lock.unlock()
         deliver(event)
     }

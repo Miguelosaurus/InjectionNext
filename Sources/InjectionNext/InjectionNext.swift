@@ -133,7 +133,8 @@ open class InjectionNext: SimpleSocket {
     ]
 
     static func validDeveloperTool(_ tool: String, value: String?) -> Bool {
-        developerToolValues[tool]?.contains(value ?? "") ?? ["refresh", "inspect", "install"].contains(tool)
+        if tool == "delivery-preparing" { return DeliveryPreparing.parse(value) != nil }
+        return developerToolValues[tool]?.contains(value ?? "") ?? ["refresh", "inspect", "install"].contains(tool)
     }
 
     private func developerTool(_ request: [String: Any]) {
@@ -154,6 +155,11 @@ open class InjectionNext: SimpleSocket {
         }
         let expected = request["expected_identity"] as? [String: Any] ?? [:]
         guard Self.sameCaptureIdentity(expected, identity) else { reply(["success": false, "error": "DEVELOPER_IDENTITY_MISMATCH"]); return }
+        if tool == "delivery-preparing", let signal = DeliveryPreparing.parse(request["value"] as? String) {
+            // Presentation only; never admits, loads or refreshes anything.
+            PreparedDeliveryFeedback.shared.preparing(requestID: signal.requestID, estimateMs: signal.estimateMs, baseline: signal.baseline)
+            reply(["success": true]); return
+        }
         guard identity["is_active"] as? Bool == true, identity["root_ready"] as? Bool == true else {
             reply(["success": false, "error": "DEVELOPER_NOT_FOREGROUND"]); return
         }
@@ -855,3 +861,13 @@ open class InjectionNext: SimpleSocket {
     }
 }
 #endif
+
+/// `<request-uuid>:<estimate-ms>:<baseline-revision>` from the Swift Sim helper.
+enum DeliveryPreparing {
+    static func parse(_ value: String?) -> (requestID: String, estimateMs: Int, baseline: Int)? {
+        guard let parts = value?.split(separator: ":"), parts.count == 3, UUID(uuidString: String(parts[0])) != nil,
+              parts[1].count <= 6, parts[2].count <= 9,
+              let estimate = Int(parts[1]), let baseline = Int(parts[2]), estimate >= 0, baseline >= 0 else { return nil }
+        return (String(parts[0]), estimate, baseline)
+    }
+}
