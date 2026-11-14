@@ -11,6 +11,8 @@
         F01700042F11000000000001 /* DeveloperInstallIntent.swift in Engine Sources */ = {isa = PBXBuildFile; fileRef = F01700052F11000000000001 /* DeveloperInstallIntent.swift */; };
         F01700012F11000000000001 /* InstallRequestQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = F01700022F11000000000001 /* InstallRequestQueue.swift */; };
         DECA00032F11000000000001 /* DeveloperTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = DECA00042F11000000000001 /* DeveloperTools.swift */; };
+        DECA00052F11000000000001 /* DeveloperInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = DECA00062F11000000000001 /* DeveloperInput.swift */; };
+        DECA00072F11000000000001 /* DeveloperInput.swift in Engine Sources */ = {isa = PBXBuildFile; fileRef = DECA00062F11000000000001 /* DeveloperInput.swift */; };
         DECA00012F11000000000001 /* DeveloperReportStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = DECA00022F11000000000001 /* DeveloperReportStore.swift */; };
         CAFE00312F08000000000001 /* PreparedReplacementProof.swift in Client Sources */ = {isa = PBXBuildFile; fileRef = CAFE00302F08000000000001 /* PreparedReplacementProof.swift */; };
         CAFE00322F08000000000001 /* PreparedReplacementProof.swift in Engine Sources */ = {isa = PBXBuildFile; fileRef = CAFE00302F08000000000001 /* PreparedReplacementProof.swift */; };
@@ -186,6 +188,7 @@
         F01700052F11000000000001 /* DeveloperInstallIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DeveloperInstallIntent.swift; path = ../../Sources/InjectionNext/DeveloperInstallIntent.swift; sourceTree = "<group>"; };
         F01700022F11000000000001 /* InstallRequestQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallRequestQueue.swift; sourceTree = "<group>"; };
         DECA00042F11000000000001 /* DeveloperTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DeveloperTools.swift; path = ../../Sources/InjectionNext/DeveloperTools.swift; sourceTree = "<group>"; };
+        DECA00062F11000000000001 /* DeveloperInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DeveloperInput.swift; path = ../../Sources/InjectionNext/DeveloperInput.swift; sourceTree = "<group>"; };
         DECA00022F11000000000001 /* DeveloperReportStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeveloperReportStore.swift; sourceTree = "<group>"; };
         CAFE00302F08000000000001 /* PreparedReplacementProof.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PreparedReplacementProof.swift; path = ../../Sources/InjectionNext/PreparedReplacementProof.swift; sourceTree = "<group>"; };
         CAFE00102F08000000000001 /* CompilationRegistration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompilationRegistration.swift; sourceTree = "<group>"; };
@@ -620,6 +623,7 @@
 				BBDD84182C4FE7E6000F3124 /* InjectionNext.swift */,
                 F01700052F11000000000001 /* DeveloperInstallIntent.swift */,
                 DECA00042F11000000000001 /* DeveloperTools.swift */,
+                DECA00062F11000000000001 /* DeveloperInput.swift */,
                 CAFE00002F08000000000001 /* PreparedDelivery.swift */,
                 CAFE00302F08000000000001 /* PreparedReplacementProof.swift */,
 				BBDD84532C4FEB16000F3124 /* TupleRegex.swift */,
@@ -903,6 +907,7 @@
                 CAFE00112F08000000000001 /* CompilationRegistration.swift in Sources */,
 				CAFE00032F08000000000001 /* PreparedDeliveryEngine.swift in Sources */,
                 CAFE00322F08000000000001 /* PreparedReplacementProof.swift in Engine Sources */,
+                DECA00072F11000000000001 /* DeveloperInput.swift in Engine Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -913,6 +918,7 @@
 				BBDD84422C4FEA4E000F3124 /* InjectionNext.swift in Sources */,
                 F01700032F11000000000001 /* DeveloperInstallIntent.swift in Client Sources */,
                 DECA00032F11000000000001 /* DeveloperTools.swift in Sources */,
+                DECA00052F11000000000001 /* DeveloperInput.swift in Sources */,
                 CAFE00012F08000000000001 /* PreparedDelivery.swift in Sources */,
                 CAFE00312F08000000000001 /* PreparedReplacementProof.swift in Client Sources */,
 				BB42F8E12EB626F100FDBBCC /* SwiftAspects.swift in Sources */,

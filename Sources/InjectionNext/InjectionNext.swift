@@ -134,6 +134,7 @@ open class InjectionNext: SimpleSocket {
 
     static func validDeveloperTool(_ tool: String, value: String?) -> Bool {
         if tool == "delivery-preparing" { return DeliveryPreparing.parse(value) != nil }
+        if DeveloperInput.tools.contains(tool) { return DeveloperInput.valid(tool: tool, value: value) }
         return developerToolValues[tool]?.contains(value ?? "") ?? ["refresh", "inspect", "install"].contains(tool)
     }
 
@@ -190,6 +191,13 @@ open class InjectionNext: SimpleSocket {
                   InjectionDeveloperConnectionIsCurrent(self),
                   Self.sameCaptureIdentity(identity, self.clientIdentity()),
                   !PreparedDeliveryLedger.shared.hasPending else { reject("DEVELOPER_TOOL_UNCONFIRMED"); return }
+            if let input = DeveloperInput(tool: tool, value: request["value"] as? String) {
+                input.perform(in: keyWindows[0]) { error in
+                    _ = DeveloperToolLedger.shared.complete(id: operationID,
+                        result: error.map { ["success": false, "error": $0] } ?? ["success": true])
+                }
+                return
+            }
             if tool == "install" {
                 #if os(iOS) && !targetEnvironment(simulator)
                 guard let intent = DeveloperInstallIntent.parse(request["value"] as? String,

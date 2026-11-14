@@ -621,6 +621,7 @@ class ControlServer {
         guard let operationID = params["operation_id"] as? String, UUID(uuidString: operationID) != nil,
               let tool = params["tool"] as? String,
               tool == "delivery-preparing" ? Self.validPreparing(params["value"] as? String)
+                : DeveloperInput.tools.contains(tool) ? DeveloperInput.valid(tool: tool, value: params["value"] as? String)
                 : Self.developerToolValues[tool]?.contains(params["value"] as? String ?? "") ?? ["refresh", "inspect"].contains(tool),
               ["bundle_id", "executable_uuid", "debug_dylib_uuid", "process_nonce", "connection_nonce"].allSatisfy({
                   guard let value = params[$0] as? String else { return false }; return !value.isEmpty && value.utf8.count <= 256
@@ -639,8 +640,9 @@ class ControlServer {
         guard !PreparedDeliveryEngine.hasPending(for: identity) else { return .fail("DEVELOPER_BUSY") }
         if tool == "inspect", !capabilities.contains("developer-inspection-v1") { return .fail("DEVELOPER_CONTEXT_UNSUPPORTED") }
         if tool == "delivery-preparing", !capabilities.contains("delivery-preparing-v1") { return .fail("DEVELOPER_CONTEXT_UNSUPPORTED") }
+        if DeveloperInput.tools.contains(tool), !capabilities.contains("developer-input-v1") { return .fail("DEVELOPER_CONTEXT_UNSUPPORTED") }
         var request: [String: Any] = ["operation_id": operationID.lowercased(), "tool": tool]
-        if Self.developerToolValues[tool] != nil || tool == "delivery-preparing" { request["value"] = params["value"] }
+        if Self.developerToolValues[tool] != nil || tool == "delivery-preparing" || DeveloperInput.tools.contains(tool) { request["value"] = params["value"] }
         let (result, error) = client.requestDeveloperTool(request, identity: identity)
         guard let result else { return .fail(error ?? "DEVELOPER_TOOL_UNCONFIRMED") }
         return .ok(["schema_version": 1, "identity": identity, "operation_id": operationID.lowercased(), "result": result])
