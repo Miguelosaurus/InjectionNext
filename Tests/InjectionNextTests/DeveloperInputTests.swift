@@ -4,10 +4,13 @@ import XCTest
 final class DeveloperInputTests: XCTestCase {
     func testOnlyBoundedWellFormedInputIsAccepted() {
         XCTAssertTrue(DeveloperInput.valid(tool: "tap", value: "120,340.5"))
+        XCTAssertTrue(DeveloperInput.valid(tool: "longpress", value: "120,340.5"))
+        XCTAssertTrue(InjectionNext.validDeveloperTool("longpress", value: "1,2"))
         XCTAssertTrue(DeveloperInput.valid(tool: "swipe", value: "200,600,200,200"))
         XCTAssertTrue(DeveloperInput.valid(tool: "type", value: "hello"))
         for value in [nil, "", "120", "120,", "a,b", "-1,5", "1,2,3", "inf,2", "30000,1"] {
             XCTAssertFalse(DeveloperInput.valid(tool: "tap", value: value), String(describing: value))
+            XCTAssertFalse(DeveloperInput.valid(tool: "longpress", value: value), String(describing: value))
         }
         XCTAssertFalse(DeveloperInput.valid(tool: "swipe", value: "1,2,3"))
         XCTAssertFalse(DeveloperInput.valid(tool: "type", value: ""))
@@ -21,6 +24,11 @@ final class DeveloperInputTests: XCTestCase {
         let tap = try XCTUnwrap(DeveloperInput(tool: "tap", value: "10,20")).touches
         XCTAssertEqual(tap.map(\.2), ["began", "ended"])
         XCTAssertEqual(tap.first?.1, CGPoint(x: 10, y: 20))
+
+        let longpress = try XCTUnwrap(DeveloperInput(tool: "longpress", value: "10,20")).touches
+        XCTAssertEqual(longpress.map(\.2), ["began", "ended"])
+        XCTAssertEqual(longpress.map(\.0), [0, 0.8])
+        XCTAssertTrue(longpress.allSatisfy { $0.1 == CGPoint(x: 10, y: 20) })
 
         let swipe = try XCTUnwrap(DeveloperInput(tool: "swipe", value: "100,500,100,100")).touches
         XCTAssertEqual(swipe.first?.2, "began")

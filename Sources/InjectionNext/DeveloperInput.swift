@@ -10,16 +10,20 @@ import UIKit
 /// tool path, after that path's identity, foreground and expiry checks.
 enum DeveloperInput {
     case tap(CGPoint)
+    case longpress(CGPoint)
     case swipe(from: CGPoint, to: CGPoint)
     case type(String)
 
-    static let tools: Set<String> = ["tap", "swipe", "type"]
+    static let tools: Set<String> = ["tap", "longpress", "swipe", "type"]
 
     init?(tool: String, value: String?) {
         switch tool {
         case "tap":
             guard let p = Self.numbers(value, count: 2) else { return nil }
             self = .tap(CGPoint(x: p[0], y: p[1]))
+        case "longpress":
+            guard let p = Self.numbers(value, count: 2) else { return nil }
+            self = .longpress(CGPoint(x: p[0], y: p[1]))
         case "swipe":
             guard let p = Self.numbers(value, count: 4) else { return nil }
             self = .swipe(from: CGPoint(x: p[0], y: p[1]), to: CGPoint(x: p[2], y: p[3]))
@@ -45,6 +49,8 @@ enum DeveloperInput {
         switch self {
         case .tap(let point):
             return [(0, point, "began"), (0.06, point, "ended")]
+        case .longpress(let point):
+            return [(0, point, "began"), (0.8, point, "ended")]
         case .swipe(let from, let to):
             let steps = 12, duration = 0.3
             var events: [(Double, CGPoint, String)] = [(0, from, "began")]
@@ -63,7 +69,7 @@ enum DeveloperInput {
     /// Completes with nil on success or a typed error code.
     @MainActor func perform(in window: UIWindow, completion: @escaping (String?) -> Void) {
         switch self {
-        case .tap(let point):
+        case .tap(let point), .longpress(let point):
             guard window.bounds.contains(point) else { completion("DEVELOPER_INPUT_OUTSIDE_WINDOW"); return }
         case .swipe(let from, let to):
             guard window.bounds.contains(from), window.bounds.contains(to) else { completion("DEVELOPER_INPUT_OUTSIDE_WINDOW"); return }
