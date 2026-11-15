@@ -36,7 +36,8 @@ static InjectionTouchEventCallback injectionTouchEventCallback;
 static BOOL injectionCaptureInstalled;
 static BOOL injectionIsReplaying;
 static NSMutableDictionary<NSNumber *, UITouch *> *injectionTouches;
-static NSMutableDictionary<NSNumber *, UIView *> *injectionTargets;
+// A UIView, or since iOS 18 a SwiftUI gesture container that is not a view.
+static NSMutableDictionary<NSNumber *, id> *injectionTargets;
 static UIEvent *injectionReplayEvent;
 
 static NSString *InjectionPhaseName(UITouchPhase phase) {
@@ -140,7 +141,7 @@ static void InjectionSendTouchJSON(UIEvent *event) {
 }
 @end
 
-static void InjectionConfigureTouch(UITouch *touch, UIView *target,
+static void InjectionConfigureTouch(UITouch *touch, UIWindow *window, id target,
                                     CGPoint location, UITouchPhase phase,
                                     NSTimeInterval timestamp, NSUInteger tapCount,
                                     NSUInteger identity) {
@@ -148,7 +149,12 @@ static void InjectionConfigureTouch(UITouch *touch, UIView *target,
     if (phase == UITouchPhaseBegan)
         [touch setInitialTouchTimestamp:timestamp];
     [touch setPhase:phase];
-    [touch setWindow:target.window];
+    // UIButton and SwiftUI gestures only complete a tap for a touch that began
+    // on that view (KIF does the same).
+    SEL firstTouch = NSSelectorFromString(@"_setIsFirstTouchForView:");
+    if (phase == UITouchPhaseBegan && [touch respondsToSelector:firstTouch])
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(touch, firstTouch, YES);
+    [touch setWindow:window];
     [touch setView:target];
     [touch setTapCount:MAX(tapCount, 1)];
     [touch _setPathIndex:1];
@@ -159,6 +165,27 @@ static void InjectionConfigureTouch(UITouch *touch, UIView *target,
     [touch _setEdgeType:0];
     [touch _setEdgeAim:0];
     [touch _setLocationInWindow:location resetPrevious:phase == UITouchPhaseBegan];
+}
+
+/// What a real touch would be delivered to. Since iOS 18, SwiftUI hosting
+/// views answer the hit-test context with a gesture container, not a view.
+static id InjectionTouchTarget(UIWindow *window, CGPoint location) {
+    UIView *target = [window hitTest:location withEvent:nil] ?: window;
+    Class contextClass = NSClassFromString(@"_UIHitTestContext");
+    SEL makeContext = NSSelectorFromString(@"contextWithPoint:radius:");
+    SEL hitContext = NSSelectorFromString(@"_hitTestWithContext:");
+    if (![contextClass respondsToSelector:makeContext])
+        return target;
+    for (UIView *view = target; view && view != window; view = view.superview) {
+        if (![view respondsToSelector:hitContext])
+            continue;
+        CGPoint point = [view convertPoint:location fromView:window];
+        id context = ((id (*)(id, SEL, CGPoint, CGFloat))objc_msgSend)(contextClass, makeContext, point, 0);
+        id found = context ? ((id (*)(id, SEL, id))objc_msgSend)(view, hitContext, context) : nil;
+        if (found)
+            return found;
+    }
+    return target;
 }
 
 static void InjectionShowTapIndicator(UIWindow *window, CGPoint location) {
@@ -217,10 +244,10 @@ static void InjectionReplayEvent(NSDictionary *event) {
         CGPoint location = CGPointMake([touchInfo[@"x"] doubleValue],
                                        [touchInfo[@"y"] doubleValue]);
         UITouchPhase phase = InjectionPhaseFromName(touchInfo[@"phase"] ?: event[@"phase"]);
-        UIView *target = injectionTargets[touchID];
+        id target = injectionTargets[touchID];
 
         if (phase == UITouchPhaseBegan || !target) {
-            target = [window hitTest:location withEvent:nil] ?: window;
+            target = InjectionTouchTarget(window, location);
             injectionTargets[touchID] = target;
         }
 
@@ -230,7 +257,7 @@ static void InjectionReplayEvent(NSDictionary *event) {
             injectionTouches[touchID] = touch;
         }
 
-        InjectionConfigureTouch(touch, target, location, phase, timestamp,
+        InjectionConfigureTouch(touch, window, target, location, phase, timestamp,
                                 [touchInfo[@"tapCount"] unsignedIntegerValue],
                                 touchID.unsignedIntegerValue);
         if (phase == UITouchPhaseBegan)
