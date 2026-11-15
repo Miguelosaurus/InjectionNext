@@ -65,6 +65,18 @@ enum DeveloperInput {
         }
     }
 
+    struct SettleState {
+        static let pollInterval: TimeInterval = 0.05
+        static let minimum: TimeInterval = 0.1
+        static let timeout: TimeInterval = 1.5
+        private(set) var consecutiveQuietPolls = 0
+
+        mutating func shouldComplete(elapsed: TimeInterval, quiet: Bool) -> Bool {
+            consecutiveQuietPolls = quiet ? consecutiveQuietPolls + 1 : 0
+            return elapsed >= Self.timeout || (elapsed >= Self.minimum && consecutiveQuietPolls >= 2)
+        }
+    }
+
     #if canImport(UIKit) && !os(watchOS)
     /// Completes with nil on success or a typed error code.
     @MainActor func perform(in window: UIWindow, completion: @escaping (String?) -> Void) {
@@ -83,8 +95,49 @@ enum DeveloperInput {
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let json = String(data: data, encoding: .utf8) else { completion("DEVELOPER_INPUT_INVALID"); return }
         json.withCString { InjectionReplayTouchEventsJSON($0) }
-        // Report after the gesture's last phase has been delivered.
-        DispatchQueue.main.asyncAfter(deadline: .now() + (touches.last?.0 ?? 0) + 0.15) { completion(nil) }
+        // Start observing after the final scheduled phase.
+        DispatchQueue.main.asyncAfter(deadline: .now() + (touches.last?.0 ?? 0)) {
+            Self.waitForSettle(in: window, completion: completion)
+        }
+    }
+
+    @MainActor private static func waitForSettle(in window: UIWindow, completion: @escaping (String?) -> Void) {
+        let start = ProcessInfo.processInfo.systemUptime
+        var state = SettleState()
+        func poll() {
+            let elapsed = ProcessInfo.processInfo.systemUptime - start
+            if state.shouldComplete(elapsed: elapsed, quiet: isQuiet(window)) {
+                completion(nil)
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + SettleState.pollInterval) { poll() }
+            }
+        }
+        poll()
+    }
+
+    @MainActor private static func isQuiet(_ window: UIWindow) -> Bool {
+        let limit = 3000
+        var layers = [window.layer]
+        var visited = 0
+        while let layer = layers.popLast() {
+            visited += 1
+            if visited > limit || !(layer.animationKeys()?.isEmpty ?? true) { return false }
+            if let children = layer.sublayers {
+                if visited + layers.count + children.count > limit { return false }
+                layers.append(contentsOf: children)
+            }
+        }
+        var views: [UIView] = [window]
+        visited = 0
+        while let view = views.popLast() {
+            visited += 1
+            if visited > limit { return false }
+            if let scroll = view as? UIScrollView, scroll.isDragging || scroll.isDecelerating { return false }
+            let children = view.subviews
+            if visited + views.count + children.count > limit { return false }
+            views.append(contentsOf: children)
+        }
+        return true
     }
 
     @MainActor private static func firstResponder(in view: UIView) -> UIResponder? {

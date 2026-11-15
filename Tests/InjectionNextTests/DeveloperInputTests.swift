@@ -20,6 +20,18 @@ final class DeveloperInputTests: XCTestCase {
         XCTAssertFalse(InjectionNext.validDeveloperTool("tap", value: "1"))
     }
 
+    func testSettlingRequiresConsecutiveQuietPollsAndHasDeadline() {
+        var state = DeveloperInput.SettleState()
+        XCTAssertFalse(state.shouldComplete(elapsed: 0, quiet: true))
+        XCTAssertFalse(state.shouldComplete(elapsed: 0.05, quiet: true))
+        XCTAssertFalse(state.shouldComplete(elapsed: 0.10, quiet: false))
+        XCTAssertFalse(state.shouldComplete(elapsed: 0.15, quiet: true))
+        XCTAssertTrue(state.shouldComplete(elapsed: 0.20, quiet: true))
+        var busy = DeveloperInput.SettleState()
+        XCTAssertFalse(busy.shouldComplete(elapsed: 1.49, quiet: false))
+        XCTAssertTrue(busy.shouldComplete(elapsed: 1.5, quiet: false))
+    }
+
     func testTapAndSwipeBecomeOneContinuousTouch() throws {
         let tap = try XCTUnwrap(DeveloperInput(tool: "tap", value: "10,20")).touches
         XCTAssertEqual(tap.map(\.2), ["began", "ended"])
