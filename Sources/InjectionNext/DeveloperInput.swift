@@ -121,7 +121,12 @@ enum DeveloperInput {
         var visited = 0
         while let layer = layers.popLast() {
             visited += 1
-            if visited > limit || !(layer.animationKeys()?.isEmpty ?? true) { return false }
+            if visited > limit || layer.animationKeys()?.contains(where: { key in
+                // Endless animations (cursor blink, spinners) never settle; ignore them.
+                guard let animation = layer.animation(forKey: key) else { return false }
+                return !(animation.repeatCount.isInfinite || animation.duration.isInfinite
+                    || animation.repeatDuration.isInfinite || animation.duration > 60)
+            }) == true { return false }
             if let children = layer.sublayers {
                 if visited + layers.count + children.count > limit { return false }
                 layers.append(contentsOf: children)
